@@ -18,11 +18,22 @@ int cdiv(int m, int n) {
   return (m + n - 1) / n;
 }
 
-__global__ void testFill(bf16* X, int N, int parity) {
+__global__ void testFill(bf16* X, int M, int N, int parity) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  int v = (idx % 8 - 4);
-  v = (v >= 0) ? v + 1 : v;
-  X[idx] = (bf16)(v * parity);
+  int m_idx = idx % M;
+  int n_idx = idx / M;
+  if (m_idx >= M || n_idx >= N)
+    return;
+  if (parity < 0) {
+    X[idx] = (m_idx == n_idx) ? 1.0 : 0.0;
+  } else {
+    X[idx] = idx;
+  }
+
+  // int v = (idx % 8 - 4);
+  // //v = (v >= 0) ? v + 1 : v;
+  // //X[idx] = (bf16)(v * parity);
+  // X[idx] = (float)(clock() % 8) / 8.0 - 0.5;
 }
 
 cublasHandle_t cublas_handle;
@@ -30,7 +41,7 @@ void runCublasGemmBF16(int M, int N, int K, bf16 *A, bf16 *B, bf16 *C) {
   float alpha = 1, beta = 0;
   // C(column major) = A(row major) * B(column major)
   cublasStatus_t status = cublasGemmEx(cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N, M, N, K, &alpha, A, CUDA_R_16BF,
-    N, B, CUDA_R_16BF, K, &beta, C, CUDA_R_16BF, N, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    K, B, CUDA_R_16BF, K, &beta, C, CUDA_R_16BF, M, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
   if (status != CUBLAS_STATUS_SUCCESS) {
     fprintf(stderr, "CUBLAS error: %d\n", status);
@@ -38,10 +49,26 @@ void runCublasGemmBF16(int M, int N, int K, bf16 *A, bf16 *B, bf16 *C) {
   }
 }
 
+__global__ void gemm(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < M * N) {
+    int m_idx = idx % M;
+    int n_idx = idx / M;
+    float sum = 0.0;
+    for (int k = 0; k < K; k++) {
+      sum += __bfloat162float(A[m_idx * K + k]) * __bfloat162float(B[k + n_idx * K]);
+    }
+    C[m_idx + n_idx * M]= __float2bfloat16(sum);
+  }
+}
+
 int main() {
   int m = 6 * 11 * 128;
   int n = 6 * 12 * 128;
-  int k = 1280;
+  int k = 256;
+
+  m = k = 8;
+  n = 16;
 
   int max = 16384;
 
@@ -58,31 +85,52 @@ int main() {
 
   // Fill with test data.
   int numel = max * max;
-  testFill<<<numel / 1024, 1024>>>(A, numel, 1);
-  testFill<<<numel / 1024, 1024>>>(B, numel, -1);
+  testFill<<<cdiv(numel, 1024), 1024>>>(A, m, k, 1);
+  testFill<<<cdiv(numel, 1024), 1024>>>(B, n, k, -1);
   check(cudaGetLastError());
 
   // Generate cuBLAS reference.
   cublasCreate(&cublas_handle);
-  runCublasGemmBF16(m, n, k, A, B, C);
+  runCublasGemmBF16(m, n, k, A, B, Cref);
 
   // Run test kernel.
+  gemm<<<cdiv(m * n, 1024), 1024>>>(A, B, C, m, n, k);
 
   // Print a slab of matrix for sanity.
+  bf16* hostA = (bf16*)malloc(sizeof(bf16) * numel);
+  bf16* hostB = (bf16*)malloc(sizeof(bf16) * numel);
+  check(cudaMemcpy(hostA, A, sizeof(bf16) * m * k, cudaMemcpyDeviceToHost));
+  check(cudaMemcpy(hostB, B, sizeof(bf16) * n * k, cudaMemcpyDeviceToHost));
+
+  for (int i = 0; i< 8; i++) {
+      for (int j = 0; j < 8; j++) {
+        printf("  %6.2f", __bfloat162float(hostA[i * k + j]));
+      }
+      printf("\n");
+  }
+  printf("\n");
+  for (int i = 0; i< 8; i++) {
+      for (int j = 0; j < 8; j++) {
+        printf("  %6.2f", __bfloat162float(hostB[i + j * k]));
+      }
+      printf("\n");
+  }
+  printf("\n");
+
   bf16* hostM = (bf16*)malloc(sizeof(bf16) * numel);
   auto print = [&] (bf16* X) {
     check(cudaMemcpy(hostM, X, sizeof(bf16) * numel, cudaMemcpyDeviceToHost));
     check(cudaDeviceSynchronize());
     for (int i = 0; i < 8; i++) {
       for (int j = 0; j < 8; j++) {
-        printf("  %6.2f", __bfloat162float(hostM[i * max + j]));
+        printf("  %6.2f", __bfloat162float(hostM[i + j * m]));
       }
       printf("\n");
     }
     printf("\n");
   };
-  print(A);
-  print(B);
+  //print(A);
+  //print(B);
   print(C);
   print(Cref);
 
