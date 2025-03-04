@@ -4,3 +4,6 @@ NVCC_LDFLAGS = -lcublas -lcuda -lineinfo --keep
 
 gemm: gemm.cu
 	nvcc $(NVCC_FLAGS) $(NVCC_LDFLAGS) $^ -o $@
+
+maxreg: maxreg.cu
+	nvcc $(NVCC_FLAGS) $(NVCC_LDFLAGS) $^ -o $@
