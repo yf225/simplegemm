@@ -598,7 +598,7 @@ void run_gemm(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K);
 
   // Launch kernel!
-  gemm<<<1, NUM_THREADS, smem_size>>>(descA, descB, C, M, N, K);
+  gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(descA, descB, C, M, N, K);
   check(cudaDeviceSynchronize());
   check(cudaGetLastError());
 }
