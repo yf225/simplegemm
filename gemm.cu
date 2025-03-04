@@ -467,6 +467,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
   if (wgid == 0) {
     // Producer warpgroup.
     setmaxnreg_dec<40>();
+    int stage = 0;
     int phase = 0;
     // Mainloop.
 
@@ -478,16 +479,16 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         for (int k = 0; k < BLOCK_K; k += BLOCK_K) {
           // Wait for consumer.
           // TODO: stage and phase update.
-          wait_barrier(&cons[0], phase);
-          phase ^= 1;
+          wait_barrier(&cons[stage], phase);
           // Set expect bytes for TMA.
           expect_bytes(
-              &prod[0], sizeof(bf16) * (BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N));
+              &prod[stage], sizeof(bf16) * (BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N));
           // Load A.
           // TODO: use proper stage
-          tma_load(&smem.A[0], &A, &prod[0], k * BLOCK_K, m * BLOCK_M);
+          tma_load(&smem.A[0], &A, &prod[stage], k * BLOCK_K, m * BLOCK_M);
           // Load B.
-          tma_load(&smem.B[0], &B, &prod[0], k * BLOCK_K, n * BLOCK_N);
+          tma_load(&smem.B[0], &B, &prod[stage], k * BLOCK_K, n * BLOCK_N);
+          phase ^= 1;
         }
       }
     }
@@ -495,9 +496,12 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
     // Consumer warpgroup.
     setmaxnreg_inc<232>();
 
+    int stage = 0;
     int phase = 0;
     if (wg_tid == 0) {
-      arrive_barrier(&cons[0], 1);
+      for (int i = 0; i < STAGES; i++) {
+        arrive_barrier(&cons[i], 1);
+      }
     }
     for (auto bid = blockIdx.x; bid < m_blocks * n_blocks; bid += gridDim.x) {
       auto m = bid / n_blocks;
@@ -507,8 +511,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       // Mainloop.
       for (int k = 0; k < K; k += BLOCK_K) {
         // Wait for producer.
-        wait_barrier(&prod[0], phase);
-        phase ^= 1;
+        wait_barrier(&prod[stage], phase);
 
         wgmma_fence();
 
@@ -523,7 +526,8 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
 
         // Arrive at consumer.
         if (wg_tid == 0)
-          arrive_barrier(&cons[0], 1);
+          arrive_barrier(&cons[stage], 1);
+        phase ^= 1;
       }
       // Write back to gmem.
       auto warp = wg_tid / 32;
