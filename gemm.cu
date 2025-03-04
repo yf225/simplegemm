@@ -21,7 +21,7 @@ void checkCudaErrors(cudaError_t error, const char* file, int line) {
 
 #define check(err) checkCudaErrors(err, __FILE__, __LINE__)
 
-int cdiv(int m, int n) {
+__host__ __device__ int cdiv(int m, int n) {
   return (m + n - 1) / n;
 }
 
@@ -461,58 +461,110 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
   }
   __syncthreads();
 
+  auto m_blocks = cdiv(M, BLOCK_M);
+  auto n_blocks = cdiv(N, BLOCK_N);
+
   if (wgid == 0) {
     // Producer warpgroup.
     setmaxnreg_dec<40>();
     int phase = 0;
     // Mainloop.
-    int m = 0, n = 0;
+
+    //int m = 0, n = 0;
     if (wg_tid == 0) {
-      for (int k = 0; k < BLOCK_K; k += BLOCK_K) {
-        // Wait for consumer.
-        // TODO: stage and phase update.
-        wait_barrier(&cons[0], phase);
-        // Set expect bytes for TMA.
-        expect_bytes(
-            &prod[0], sizeof(bf16) * (BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N));
-        // Load A.
-        // TODO: use proper stage
-        tma_load(&smem.A[0], &A, &prod[0], k * BLOCK_K, m * BLOCK_M);
-        // Load B.
-        tma_load(&smem.B[0], &B, &prod[0], k * BLOCK_K, n * BLOCK_N);
+      for (auto bid = blockIdx.x; bid < m_blocks * n_blocks; bid += gridDim.x) {
+        auto m = bid / n_blocks;
+        auto n = bid % n_blocks;
+        for (int k = 0; k < BLOCK_K; k += BLOCK_K) {
+          // Wait for consumer.
+          // TODO: stage and phase update.
+          wait_barrier(&cons[0], phase);
+          phase ^= 1;
+          // Set expect bytes for TMA.
+          expect_bytes(
+              &prod[0], sizeof(bf16) * (BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N));
+          // Load A.
+          // TODO: use proper stage
+          tma_load(&smem.A[0], &A, &prod[0], k * BLOCK_K, m * BLOCK_M);
+          // Load B.
+          tma_load(&smem.B[0], &B, &prod[0], k * BLOCK_K, n * BLOCK_N);
+        }
       }
     }
   } else {
     // Consumer warpgroup.
     setmaxnreg_inc<232>();
-    float acc[16][8];
-    memset(acc, 0, sizeof(acc));
 
     int phase = 0;
     if (wg_tid == 0) {
       arrive_barrier(&cons[0], 1);
     }
-    // Mainloop.
-    for (int k = 0; k < K; k += BLOCK_K) {
-      // Wait for producer.
-      wait_barrier(&prod[0], phase);
+    for (auto bid = blockIdx.x; bid < m_blocks * n_blocks; bid += gridDim.x) {
+      auto m = bid / n_blocks;
+      auto n = bid % n_blocks;
+      float acc[16][8];
+      memset(acc, 0, sizeof(acc));
+      // Mainloop.
+      for (int k = 0; k < K; k += BLOCK_K) {
+        // Wait for producer.
+        wait_barrier(&prod[0], phase);
+        phase ^= 1;
 
-      wgmma_fence();
+        wgmma_fence();
 
 #pragma unroll
-      for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
-        wgmma256<1, 1, 1, 0, 0>(
-            acc, &smem.A[mma_k + (wgid - 1) * 64], &smem.B[mma_k]);
+        for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
+          wgmma256<1, 1, 1, 0, 0>(
+              acc, &smem.A[mma_k + (wgid - 1) * 64 * 64], &smem.B[mma_k]);
+        }
+
+        wgmma_commit_group();
+        wgmma_wait_group<0>();
+
+        // Arrive at consumer.
+        if (wg_tid == 0)
+          arrive_barrier(&cons[0], 1);
       }
+      // Write back to gmem.
+      auto warp = wg_tid / 32;
+      auto lane = wg_tid % 32;
+      auto row = warp * 16 + lane / 4;
+      auto col = (wg_tid % 4) * 2;
 
-      wgmma_commit_group();
-      wgmma_wait_group<0>();
+      row += (wgid - 1) * 64;
+      auto C_BLOCK = &C[m * BLOCK_M + n * BLOCK_N * M];
 
-      // Arrive at consumer.
-      if (wg_tid == 0)
-        arrive_barrier(&cons[0], 1);
+      //printf("%d %d %d\n", tid - 128, row, col);
+      for (int inst_n = 0; inst_n < 256; inst_n += 16) {
+#define Cidx(r, c) C_BLOCK[(r) + ((c) * M)]
+        // clang-format off
+        // printf("%d %d %d %f\n",
+        //        tid,
+        //        row,
+        //        col,
+        //        acc[n][0]);
+        Cidx(row,     inst_n + col    ) = acc[inst_n / 16][0];
+        Cidx(row,     inst_n + col + 1) = acc[inst_n / 16][1];
+        Cidx(row + 8, inst_n + col    ) = acc[inst_n / 16][2];
+        Cidx(row + 8, inst_n + col + 1) = acc[inst_n / 16][3];
+        Cidx(row,     inst_n + col + 8) = acc[inst_n / 16][4];
+        Cidx(row,     inst_n + col + 9) = acc[inst_n / 16][5];
+        Cidx(row + 8, inst_n + col + 8) = acc[inst_n / 16][6];
+        Cidx(row + 8, inst_n + col + 9) = acc[inst_n / 16][7];
+        // clang-format on
+      }
     }
-    // Write back to gmem.
+
+    // auto row = (wg_tid / 32) * 2 + wg_tid / 4;
+    // if (tid == 128) {
+    //   for (int i = 0; i < 16; i++) {
+    //     for (int j = 0; j < 8; j++) {
+    //       printf("  %6.2f", acc[i][j]);
+    //     }
+    //     printf("\n");
+    //   }
+    //   printf("\n");
+    // }
   }
   // __syncthreads();
   // if (tid == 128) {
@@ -561,8 +613,8 @@ int main() {
   // m = k = 8;
   // n = 16;
 
-  int m = 128;
-  int n = 256;
+  int m = 6 * 11 * 128;
+  int n = 3 * 12 * 256;
   int k = 64;
 
   // m = n = k = 8192;
@@ -582,7 +634,7 @@ int main() {
   // Fill with test data.
   int numel = max * max;
   testFill<<<cdiv(numel, 1024), 1024>>>(A, m, k, 1);
-  testFill<<<cdiv(numel, 1024), 1024>>>(B, n, k, -1);
+  testFill<<<cdiv(numel, 1024), 1024>>>(B, k, n, -1);
   check(cudaGetLastError());
 
   // Generate cuBLAS reference.
