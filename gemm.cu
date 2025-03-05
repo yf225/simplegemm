@@ -488,10 +488,14 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
               &prod[stage], sizeof(bf16) * (BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N));
           // Load A.
           // TODO: use proper stage
-          tma_load(&smem.A[0], &A, &prod[stage], k * BLOCK_K, m * BLOCK_M);
+          tma_load(&smem.A[stage * BLOCK_K * BLOCK_M], &A, &prod[stage], k * BLOCK_K, m * BLOCK_M);
           // Load B.
-          tma_load(&smem.B[0], &B, &prod[stage], k * BLOCK_K, n * BLOCK_N);
-          phase ^= 1;
+          tma_load(&smem.B[stage * BLOCK_K * BLOCK_N], &B, &prod[stage], k * BLOCK_K, n * BLOCK_N);
+          stage++;
+          if (stage == STAGES) {
+            stage = 0;
+            phase ^= 1;
+          }
         }
       }
     }
@@ -521,7 +525,9 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
 #pragma unroll
         for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
           wgmma256<1, 1, 1, 0, 0>(
-              acc, &smem.A[mma_k + (wgid - 1) * 64 * 64], &smem.B[mma_k]);
+              acc,
+              &smem.A[stage * BLOCK_M * BLOCK_K + mma_k + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
+              &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
         }
 
         wgmma_commit_group();
@@ -531,7 +537,11 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         if (wg_tid == 0) {
           arrive_barrier(&cons[stage], 1);
         }
-        phase ^= 1;
+        stage++;
+        if (stage == STAGES)  {
+          stage = 0;
+          phase ^= 1;
+        }
       }
       // Write back to gmem.
       auto warp = wg_tid / 32;
@@ -606,7 +616,7 @@ void run_gemm(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K);
 
   // Launch kernel!
-  gemm<<<1, NUM_THREADS, smem_size>>>(descA, descB, C, M, N, K);
+  gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(descA, descB, C, M, N, K);
   check(cudaDeviceSynchronize());
   check(cudaGetLastError());
 }
@@ -623,7 +633,7 @@ int main() {
 
   int m = 128;
   int n = 256;
-  int k = 128;
+  int k = 1024;
 
   // m = n = k = 8192;
   int max = 16384;
