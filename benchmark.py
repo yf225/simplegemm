@@ -294,10 +294,14 @@ torch.ops.load_library("gemm.so")
 def custom_gemm(a, b):
     return torch.ops.gemm.gemm(a, b)
 
+def custom_pingpong(a, b):
+    return torch.ops.gemm.pingpong(a, b)
+
 test_impls = [
     aten_matmul,
     cutlass_matmul,
     custom_gemm,
+    custom_pingpong,
 ]
 
 impl_map = {fn.__name__: fn for fn in test_impls}

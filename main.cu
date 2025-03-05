@@ -1,4 +1,4 @@
-#include "gemm.cu"
+#include "pingpong.cu"
 
 __global__ void testFill(bf16* X, int M, int N, int parity) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -135,7 +135,7 @@ int main() {
 
   // Run test kernel.
   printf("about to run gemm\n");
-  run_gemm(A, B, C, m, n, k);
+  run_pingpong(A, B, C, m, n, k);
 
   // Print a slab of matrix for sanity.
   print_matrix(hM, A, m, k, true);
@@ -169,25 +169,28 @@ int main() {
     }
   }
 
-  // Benchmark test kernel.
-  cudaEvent_t start;
-  cudaEvent_t stop;
-  check(cudaEventCreate(&start));
-  check(cudaEventCreate(&stop));
+  auto benchmark = false;
+  if (benchmark) {
+    // Benchmark test kernel.
+    cudaEvent_t start;
+    cudaEvent_t stop;
+    check(cudaEventCreate(&start));
+    check(cudaEventCreate(&stop));
 
-  int repeat_times = 1000;
-  float ms = 0.0f;
-  check(cudaEventRecord(start));
-  for (int j = 0; j < repeat_times; j++) {
-    run_gemm(A, B, C, m, n, k);
+    int repeat_times = 1000;
+    float ms = 0.0f;
+    check(cudaEventRecord(start));
+    for (int j = 0; j < repeat_times; j++) {
+      run_pingpong(A, B, C, m, n, k);
+    }
+    check(cudaEventRecord(stop));
+    check(cudaEventSynchronize(start));
+    check(cudaEventSynchronize(stop));
+    check(cudaEventElapsedTime(&ms, start, stop));
+
+    long flops = 2ll * m * n * k * repeat_times;
+    printf("TFLOPS: %.1f\n", flops / ms * 1e-9);
   }
-  check(cudaEventRecord(stop));
-  check(cudaEventSynchronize(start));
-  check(cudaEventSynchronize(stop));
-  check(cudaEventElapsedTime(&ms, start, stop));
-
-  long flops = 2ll * m * n * k * repeat_times;
-  printf("TFLOPS: %.1f\n", flops / ms * 1e-9);
 
   // Free resources.
   cudaFree(A);

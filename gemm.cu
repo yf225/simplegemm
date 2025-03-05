@@ -6,6 +6,8 @@
 #include <iostream>
 #include <random>
 
+namespace {
+
 using bf16 = __nv_bfloat16;
 
 void checkCudaErrors(cudaError_t error, const char* file, int line) {
@@ -26,7 +28,6 @@ __host__ __device__ int cdiv(int m, int n) {
   return (m + n - 1) / n;
 }
 
-namespace {
 
 template <typename T>
 void tmaPrint(T s[]) {

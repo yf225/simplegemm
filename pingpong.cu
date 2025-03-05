@@ -274,6 +274,107 @@ __device__ __forceinline__ void wgmma256(float d[16][8], bf16* sA, bf16* sB) {
 #endif
 }
 
+template <int ScaleD, int ScaleA, int ScaleB, int TransA, int TransB>
+__device__ __forceinline__ void wgmma128(float d[8][8], bf16* sA, bf16* sB) {
+  uint64_t desc_a = make_smem_desc(&sA[0]);
+  uint64_t desc_b = make_smem_desc(&sB[0]);
+  // if (threadIdx.x == 128) {
+
+  //   printf("%llx\n", desc_a);
+
+  //   printf("%llx\n", desc_b);
+  // }
+
+#if 1
+  asm volatile(
+      "{\n"
+      "wgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16 "
+      "{%0,   %1,   %2,   %3,   %4,   %5,   %6,   %7,   "
+      " %8,   %9,   %10,  %11,  %12,  %13,  %14,  %15,  "
+      " %16,  %17,  %18,  %19,  %20,  %21,  %22,  %23,  "
+      " %24,  %25,  %26,  %27,  %28,  %29,  %30,  %31,  "
+      " %32,  %33,  %34,  %35,  %36,  %37,  %38,  %39,  "
+      " %40,  %41,  %42,  %43,  %44,  %45,  %46,  %47,  "
+      " %48,  %49,  %50,  %51,  %52,  %53,  %54,  %55,  "
+      " %56,  %57,  %58,  %59,  %60,  %61,  %62,  %63}, "
+      " %64,"
+      " %65,"
+      " %66,    %67,  %68,  %69,  %70;\n"
+      "}\n"
+      : "+f"(d[0][0]),
+        "+f"(d[0][1]),
+        "+f"(d[0][2]),
+        "+f"(d[0][3]),
+        "+f"(d[0][4]),
+        "+f"(d[0][5]),
+        "+f"(d[0][6]),
+        "+f"(d[0][7]),
+        "+f"(d[1][0]),
+        "+f"(d[1][1]),
+        "+f"(d[1][2]),
+        "+f"(d[1][3]),
+        "+f"(d[1][4]),
+        "+f"(d[1][5]),
+        "+f"(d[1][6]),
+        "+f"(d[1][7]),
+        "+f"(d[2][0]),
+        "+f"(d[2][1]),
+        "+f"(d[2][2]),
+        "+f"(d[2][3]),
+        "+f"(d[2][4]),
+        "+f"(d[2][5]),
+        "+f"(d[2][6]),
+        "+f"(d[2][7]),
+        "+f"(d[3][0]),
+        "+f"(d[3][1]),
+        "+f"(d[3][2]),
+        "+f"(d[3][3]),
+        "+f"(d[3][4]),
+        "+f"(d[3][5]),
+        "+f"(d[3][6]),
+        "+f"(d[3][7]),
+        "+f"(d[4][0]),
+        "+f"(d[4][1]),
+        "+f"(d[4][2]),
+        "+f"(d[4][3]),
+        "+f"(d[4][4]),
+        "+f"(d[4][5]),
+        "+f"(d[4][6]),
+        "+f"(d[4][7]),
+        "+f"(d[5][0]),
+        "+f"(d[5][1]),
+        "+f"(d[5][2]),
+        "+f"(d[5][3]),
+        "+f"(d[5][4]),
+        "+f"(d[5][5]),
+        "+f"(d[5][6]),
+        "+f"(d[5][7]),
+        "+f"(d[6][0]),
+        "+f"(d[6][1]),
+        "+f"(d[6][2]),
+        "+f"(d[6][3]),
+        "+f"(d[6][4]),
+        "+f"(d[6][5]),
+        "+f"(d[6][6]),
+        "+f"(d[6][7]),
+        "+f"(d[7][0]),
+        "+f"(d[7][1]),
+        "+f"(d[7][2]),
+        "+f"(d[7][3]),
+        "+f"(d[7][4]),
+        "+f"(d[7][5]),
+        "+f"(d[7][6]),
+        "+f"(d[7][7])
+      : "l"(desc_a),
+        "l"(desc_b),
+        "n"(int32_t(ScaleD)),
+        "n"(int32_t(ScaleA)),
+        "n"(int32_t(ScaleB)),
+        "n"(int32_t(TransA)),
+        "n"(int32_t(TransB)));
+#endif
+}
+
 __device__ void wgmma_commit_group() {
   asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
 }
@@ -360,7 +461,7 @@ __device__ static void __forceinline__ tma_load(
 }
 
 constexpr int BLOCK_M = 128;
-constexpr int BLOCK_N = 256;
+constexpr int BLOCK_N = 128;
 constexpr int BLOCK_K = 64;
 constexpr int NUM_SMS = 132;
 constexpr int STAGES = 3;
@@ -454,8 +555,9 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       auto m = bid / n_blocks;
       auto n = bid % n_blocks;
 
-      float acc[16][8];
+      float acc[8][8];
       memset(acc, 0, sizeof(acc));
+
       // Mainloop.
       for (int k = 0; k < k_blocks; k++) {
         // Wait for producer.
@@ -465,10 +567,10 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
 
 #pragma unroll
         for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
-          wgmma256<1, 1, 1, 0, 0>(
-              acc,
-              &smem.A[stage * BLOCK_M * BLOCK_K + mma_k + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
-              &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
+          wgmma128<1, 1, 1, 0, 0>(
+               acc,
+               &smem.A[stage * BLOCK_M * BLOCK_K + mma_k + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
+               &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
         }
 
         wgmma_commit_group();
@@ -494,7 +596,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       auto C_BLOCK = &C[m * BLOCK_M + n * BLOCK_N * M];
 
       //printf("%d %d %d\n", tid - 128, row, col);
-      for (int inst_n = 0; inst_n < 256; inst_n += 16) {
+      for (int inst_n = 0; inst_n < BLOCK_N; inst_n += 16) {
 #define Cidx(r, c) C_BLOCK[(r) + ((c) * M)]
         // clang-format off
         // printf("%d %d %d %f\n",
@@ -562,5 +664,6 @@ void run_pingpong(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
 }
 
 void run_pingpong(void* A, void* B, void* C, int M, int N, int K) {
+  //#error check
   run_pingpong((bf16*) A, (bf16*)B, (bf16*)C, M, N, K);
 }
