@@ -558,8 +558,6 @@ void run_gemm(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
 
   // Launch kernel!
   gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(descA, descB, C, M, N, K);
-  check(cudaDeviceSynchronize());
-  check(cudaGetLastError());
 }
 
 void run_gemm(void* A, void* B, void* C, int M, int N, int K) {

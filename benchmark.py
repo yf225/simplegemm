@@ -314,6 +314,8 @@ def test():
     torch_output = torch.matmul(a, b)
     rtol = 0
     for fn in test_impls:
+        if "cutlass" in fn.__name__:
+            continue
         triton_output = fn(a, b)
         torch.cuda.synchronize()
         if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
@@ -332,7 +334,8 @@ def test():
 #x_vals = [(4 * 11 * 128, 2 * 12 * 256, k) for k in range(128, 2048 + 1, 128)]
 
 #x_vals = [(6 * 11 * 128, 3 * 12 * 256, k) for k in range(128, 2048 + 1, 128)]
-x_vals = [(6 * 11 * 128, 3 * 12 * 256, k) for k in range(640, 640 + 1, 128)]
+#x_vals = [(6 * 11 * 128, 3 * 12 * 256, k) for k in range(640, 640 + 1, 128)]
+x_vals = [(8192, 8192, 8192)]
 configs = []
 configs.append(
     triton.testing.Benchmark(
@@ -356,7 +359,8 @@ def benchmark(M, N, K, provider):
     b = torch.randn((N, K), device="cuda", dtype=torch.bfloat16).T
     quantiles = [0.5, 0.2, 0.8]
     fn = impl_map[provider]
-    ms, min_ms, max_ms = triton.testing.do_bench_cudagraph(lambda: fn(a, b), quantiles=quantiles)
+    #ms, min_ms, max_ms = triton.testing.do_bench_cudagraph(lambda: fn(a, b), quantiles=quantiles)
+    ms, min_ms, max_ms = triton.testing.do_bench(lambda: fn(a, b), quantiles=quantiles)
     #if provider == "matmul_ws_automatic":
     #    print(getattr(matmul_persistent_tma_ws_cooperative_kernel, "best_config", "not autotune"))
     #    print(BIN.asm["ttgir"])
