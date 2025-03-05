@@ -4,6 +4,7 @@
 #include <cuda_bf16.h>
 #include <stdio.h>
 #include <iostream>
+#include <random>
 
 using bf16 = __nv_bfloat16;
 
@@ -621,7 +622,30 @@ void run_gemm(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   check(cudaGetLastError());
 }
 
+template<typename Gen>
+void randomize_matrix(Gen& generator, bf16 *hM, bf16 *dM, int N) {
+  std::normal_distribution<float> distribution(0, 1);
+  for (int i = 0; i < N; i++) {
+    hM[i] = distribution(generator);
+  }
+  check(cudaMemcpy(dM, hM, sizeof(bf16) * N, cudaMemcpyHostToDevice));
+}
+
+void print_matrix(bf16* hM, bf16* dM, int M, int N, bool rowmajor) {
+  check(cudaMemcpy(hM, dM, sizeof(bf16) * M * N, cudaMemcpyDeviceToHost));
+  auto strideM = rowmajor ? N : 1;
+  auto strideN = rowmajor ? 1 : M;
+  for (int i = 0; i < 8; i++) {
+    for (int j = 0; j < 8; j++) {
+      printf("  %6.2f", __bfloat162float(hM[i * strideM + j * strideN]));
+    }
+    printf(" ...\n");
+  }
+  printf("...\n\n");
+}
+
 } // namespace
+
 
 int main() {
   // int m = 6 * 11 * 128;
@@ -631,12 +655,13 @@ int main() {
   // m = k = 8;
   // n = 16;
 
-  int m = 128;
-  int n = 256;
+  int m = 6 * 11 * 128;
+  int n = 3 * 12 * 256;
   int k = 1024;
 
-  // m = n = k = 8192;
-  int max = 16384;
+  m = n = k = 8192;
+  int max = 8192;
+  int numel = max * max;
 
   // Allocate matrices
   __nv_bfloat16* A;
@@ -649,10 +674,15 @@ int main() {
   check(cudaMalloc((void**)&C, sizeof(bf16) * max * max));
   check(cudaMalloc((void**)&Cref, sizeof(bf16) * max * max));
 
+  bf16* hM = (bf16*)malloc(sizeof(bf16) * numel);
+
   // Fill with test data.
-  int numel = max * max;
-  testFill<<<cdiv(numel, 1024), 1024>>>(A, m, k, 1);
-  testFill<<<cdiv(numel, 1024), 1024>>>(B, k, n, -1);
+  //testFill<<<cdiv(numel, 1024), 1024>>>(A, m, k, 1);
+  //testFill<<<cdiv(numel, 1024), 1024>>>(B, k, n, -1);
+  std::default_random_engine gen(1337);
+  randomize_matrix(gen, hM, A, numel);
+  randomize_matrix(gen, hM, B, numel);
+  randomize_matrix(gen, hM, C, numel);
   check(cudaGetLastError());
 
   // Generate cuBLAS reference.
@@ -661,46 +691,13 @@ int main() {
 
   // Run test kernel.
   printf("about to run gemm\n");
-
   run_gemm(A, B, C, m, n, k);
 
   // Print a slab of matrix for sanity.
-  bf16* hostA = (bf16*)malloc(sizeof(bf16) * numel);
-  bf16* hostB = (bf16*)malloc(sizeof(bf16) * numel);
-  check(cudaMemcpy(hostA, A, sizeof(bf16) * m * k, cudaMemcpyDeviceToHost));
-  check(cudaMemcpy(hostB, B, sizeof(bf16) * n * k, cudaMemcpyDeviceToHost));
-
-  for (int i = 0; i < 8; i++) {
-    for (int j = 0; j < 8; j++) {
-      printf("  %6.2f", __bfloat162float(hostA[i * k + j]));
-    }
-    printf("\n");
-  }
-  printf("\n");
-  for (int i = 0; i < 8; i++) {
-    for (int j = 0; j < 8; j++) {
-      printf("  %6.2f", __bfloat162float(hostB[i + j * k]));
-    }
-    printf("\n");
-  }
-  printf("\n");
-
-  bf16* hostM = (bf16*)malloc(sizeof(bf16) * numel);
-  auto print = [&](bf16* X) {
-    check(cudaMemcpy(hostM, X, sizeof(bf16) * numel, cudaMemcpyDeviceToHost));
-    check(cudaDeviceSynchronize());
-    for (int i = 0; i < 8; i++) {
-      for (int j = 0; j < 8; j++) {
-        printf("  %6.2f", __bfloat162float(hostM[i + j * m]));
-      }
-      printf("\n");
-    }
-    printf("\n");
-  };
-  // print(A);
-  // print(B);
-  print(C);
-  print(Cref);
+  print_matrix(hM, A, m, k, true);
+  print_matrix(hM, B, k, n, false);
+  print_matrix(hM, C, m, n, false);
+  print_matrix(hM, Cref, m, n, false);
 
   // Test against cuBLAS reference.
   bf16* hostC = nullptr;
@@ -729,13 +726,31 @@ int main() {
   }
 
   // Benchmark test kernel.
+  cudaEvent_t start;
+  cudaEvent_t stop;
+  check(cudaEventCreate(&start));
+  check(cudaEventCreate(&stop));
+
+  int repeat_times = 1000;
+  float ms = 0.0f;
+  check(cudaEventRecord(start));
+  for (int j = 0; j < repeat_times; j++) {
+    run_gemm(A, B, C, m, n, k);
+  }
+  check(cudaEventRecord(stop));
+  check(cudaEventSynchronize(start));
+  check(cudaEventSynchronize(stop));
+  check(cudaEventElapsedTime(&ms, start, stop));
+
+  long flops = 2ll * m * n * k * repeat_times;
+  printf("TFLOPS: %.1f\n", flops / ms * 1e-9);
 
   // Free resources.
   cudaFree(A);
   cudaFree(B);
   cudaFree(C);
   cudaFree(Cref);
-  free(hostM);
+  free(hM);
   free(hostC);
   free(hostCref);
   return 0;
