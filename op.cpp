@@ -26,7 +26,7 @@ at::Tensor gemm(at::Tensor a, at::Tensor b) {
 at::Tensor pingpong(at::Tensor a, at::Tensor b) {
   // a (m x k), b (k x n)
   auto c = a.new_empty({b.size(1), a.size(0)}).transpose(0, 1);
-  run_gemm(
+  run_pingpong(
       a.data_ptr(),
       b.data_ptr(),
       c.data_ptr(),

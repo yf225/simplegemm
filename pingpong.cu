@@ -464,10 +464,14 @@ constexpr int BLOCK_M = 128;
 constexpr int BLOCK_N = 128;
 constexpr int BLOCK_K = 64;
 constexpr int NUM_SMS = 132;
-constexpr int STAGES = 3;
+constexpr int STAGES = 6;
+
+constexpr int WG_M = 128;
+constexpr int INST_M = 64;
 
 constexpr int WARPGROUP_SIZE = 128;
-constexpr int WARPGROUPS = 3;
+constexpr int NUM_CONSUMERS = 1;
+constexpr int WARPGROUPS = 1 + NUM_CONSUMERS;
 constexpr int NUM_THREADS = WARPGROUPS * WARPGROUP_SIZE;
 
 struct SharedStorage {
@@ -555,7 +559,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       auto m = bid / n_blocks;
       auto n = bid % n_blocks;
 
-      float acc[8][8];
+      float acc[BLOCK_M / NUM_CONSUMERS / 64][8][8];
       memset(acc, 0, sizeof(acc));
 
       // Mainloop.
@@ -566,11 +570,15 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         wgmma_fence();
 
 #pragma unroll
-        for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
-          wgmma128<1, 1, 1, 0, 0>(
-               acc,
-               &smem.A[stage * BLOCK_M * BLOCK_K + mma_k + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
-               &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
+        for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
+#pragma unroll
+          for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
+            // TODO: the smem.A indexing is horrible garbage, clean that up.
+            wgmma128<1, 1, 1, 0, 0>(
+                acc[mma_m],
+                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
+                &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
+          }
         }
 
         wgmma_commit_group();
@@ -596,25 +604,26 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       auto C_BLOCK = &C[m * BLOCK_M + n * BLOCK_N * M];
 
       //printf("%d %d %d\n", tid - 128, row, col);
-      for (int inst_n = 0; inst_n < BLOCK_N; inst_n += 16) {
-#define Cidx(r, c) C_BLOCK[(r) + ((c) * M)]
-        // clang-format off
-        // printf("%d %d %d %f\n",
-        //        tid,
-        //        row,
-        //        col,
-        //        acc[n][0]);
-        Cidx(row,     inst_n + col    ) = f2bf(acc[inst_n / 16][0]);
-        Cidx(row,     inst_n + col + 1) = f2bf(acc[inst_n / 16][1]);
-        Cidx(row + 8, inst_n + col    ) = f2bf(acc[inst_n / 16][2]);
-        Cidx(row + 8, inst_n + col + 1) = f2bf(acc[inst_n / 16][3]);
-        Cidx(row,     inst_n + col + 8) = f2bf(acc[inst_n / 16][4]);
-        Cidx(row,     inst_n + col + 9) = f2bf(acc[inst_n / 16][5]);
-        Cidx(row + 8, inst_n + col + 8) = f2bf(acc[inst_n / 16][6]);
-        Cidx(row + 8, inst_n + col + 9) = f2bf(acc[inst_n / 16][7]);
-        // clang-format on
+      for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
+        for (int inst_n = 0; inst_n < BLOCK_N; inst_n += 16) {
+#define Cidx(r, c) C_BLOCK[((r) + mma_m * INST_M) + ((c) * M)]
+          // clang-format off
+          // printf("%d %d %d %f\n",
+          //        tid,
+          //        row,
+          //        col,
+          //        acc[n][0]);
+          Cidx(row,     inst_n + col    ) = f2bf(acc[mma_m][inst_n / 16][0]);
+          Cidx(row,     inst_n + col + 1) = f2bf(acc[mma_m][inst_n / 16][1]);
+          Cidx(row + 8, inst_n + col    ) = f2bf(acc[mma_m][inst_n / 16][2]);
+          Cidx(row + 8, inst_n + col + 1) = f2bf(acc[mma_m][inst_n / 16][3]);
+          Cidx(row,     inst_n + col + 8) = f2bf(acc[mma_m][inst_n / 16][4]);
+          Cidx(row,     inst_n + col + 9) = f2bf(acc[mma_m][inst_n / 16][5]);
+          Cidx(row + 8, inst_n + col + 8) = f2bf(acc[mma_m][inst_n / 16][6]);
+          Cidx(row + 8, inst_n + col + 9) = f2bf(acc[mma_m][inst_n / 16][7]);
+          // clang-format on
+        }
       }
-    }
 
     // auto row = (wg_tid / 32) * 2 + wg_tid / 4;
     // if (tid == 128) {
@@ -626,6 +635,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
     //   }
     //   printf("\n");
     // }
+    }
   }
   // __syncthreads();
   // if (tid == 128) {
@@ -664,6 +674,5 @@ void run_pingpong(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
 }
 
 void run_pingpong(void* A, void* B, void* C, int M, int N, int K) {
-  //#error check
   run_pingpong((bf16*) A, (bf16*)B, (bf16*)C, M, N, K);
 }

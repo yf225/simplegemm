@@ -126,7 +126,8 @@ int main() {
   std::default_random_engine gen(1337);
   randomize_matrix(gen, hM, A, numel);
   randomize_matrix(gen, hM, B, numel);
-  randomize_matrix(gen, hM, C, numel);
+  //randomize_matrix(gen, hM, C, numel);
+  check(cudaMemset(C, 0, sizeof(bf16) * numel));
   check(cudaGetLastError());
 
   // Generate cuBLAS reference.
