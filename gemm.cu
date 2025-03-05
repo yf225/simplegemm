@@ -342,7 +342,9 @@ __device__ static void __forceinline__ tma_load(
   uint32_t dst_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(dst));
   asm volatile(
       "cp.async.bulk.tensor.3d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
-      " [%0], [%1, {%3, %4, %5}], [%2];" ::"r"(dst_ptr),
+      " [%0], [%1, {%3, %4, %5}], [%2];"
+      ::
+      "r"(dst_ptr),
       "l"(tma_ptr),
       "r"(bar_ptr),
       "n"(0),
@@ -463,20 +465,21 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
 
   auto m_blocks = cdiv(M, BLOCK_M);
   auto n_blocks = cdiv(N, BLOCK_N);
+  auto k_blocks = cdiv(K, BLOCK_K);
 
   if (wgid == 0) {
     // Producer warpgroup.
     setmaxnreg_dec<40>();
-    int stage = 0;
-    int phase = 0;
     // Mainloop.
 
     //int m = 0, n = 0;
     if (wg_tid == 0) {
+      int phase = 0;
+      int stage = 0;
       for (auto bid = blockIdx.x; bid < m_blocks * n_blocks; bid += gridDim.x) {
         auto m = bid / n_blocks;
         auto n = bid % n_blocks;
-        for (int k = 0; k < BLOCK_K; k += BLOCK_K) {
+        for (int k = 0; k < k_blocks ; k++) {
           // Wait for consumer.
           // TODO: stage and phase update.
           wait_barrier(&cons[stage], phase);
@@ -509,7 +512,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       float acc[16][8];
       memset(acc, 0, sizeof(acc));
       // Mainloop.
-      for (int k = 0; k < K; k += BLOCK_K) {
+      for (int k = 0; k < k_blocks; k++) {
         // Wait for producer.
         wait_barrier(&prod[stage], phase);
 
@@ -525,8 +528,9 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         wgmma_wait_group<0>();
 
         // Arrive at consumer.
-        if (wg_tid == 0)
+        if (wg_tid == 0) {
           arrive_barrier(&cons[stage], 1);
+        }
         phase ^= 1;
       }
       // Write back to gmem.
@@ -602,7 +606,7 @@ void run_gemm(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K);
 
   // Launch kernel!
-  gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(descA, descB, C, M, N, K);
+  gemm<<<1, NUM_THREADS, smem_size>>>(descA, descB, C, M, N, K);
   check(cudaDeviceSynchronize());
   check(cudaGetLastError());
 }
@@ -617,9 +621,9 @@ int main() {
   // m = k = 8;
   // n = 16;
 
-  int m = 6 * 11 * 128;
-  int n = 3 * 12 * 256;
-  int k = 64;
+  int m = 128;
+  int n = 256;
+  int k = 128;
 
   // m = n = k = 8192;
   int max = 16384;
