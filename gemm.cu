@@ -425,8 +425,11 @@ void run_naive_gemm(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
 constexpr int BLOCK_M = 128;
 constexpr int BLOCK_N = 256;
 constexpr int BLOCK_K = 64;
-constexpr int NUM_SMS = 132;
+constexpr int NUM_SMS = 128;
 constexpr int STAGES = 3;
+constexpr int GROUP_M = 16;
+constexpr int GROUP_N = 8;
+
 constexpr int WARPGROUP_SIZE = 128;
 constexpr int WARPGROUPS = 3;
 constexpr int NUM_THREADS = WARPGROUPS * WARPGROUP_SIZE;
@@ -478,8 +481,15 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       int phase = 0;
       int stage = 0;
       for (auto bid = blockIdx.x; bid < m_blocks * n_blocks; bid += gridDim.x) {
-        auto m = bid / n_blocks;
-        auto n = bid % n_blocks;
+        //auto m = bid / n_blocks;
+        //auto n = bid % n_blocks;
+        auto group = bid / (GROUP_M * GROUP_N);
+        auto group_pos = bid % (GROUP_M * GROUP_N);
+        auto m = GROUP_M * (group / (n_blocks / GROUP_N));
+        auto n = GROUP_N * (group % (n_blocks / GROUP_N));
+        m += group_pos / GROUP_N;
+        n += group_pos % GROUP_N;
+
         for (int k = 0; k < k_blocks ; k++) {
           // Wait for consumer.
           // TODO: stage and phase update.
@@ -512,8 +522,15 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       }
     }
     for (auto bid = blockIdx.x; bid < m_blocks * n_blocks; bid += gridDim.x) {
-      auto m = bid / n_blocks;
-      auto n = bid % n_blocks;
+      // auto m = bid / n_blocks;
+      // auto n = bid % n_blocks;
+      auto group = bid / (GROUP_M * GROUP_N);
+      auto group_pos = bid % (GROUP_M * GROUP_N);
+      auto m = GROUP_M * (group / (n_blocks / GROUP_N));
+      auto n = GROUP_N * (group % (n_blocks / GROUP_N));
+      m += group_pos / GROUP_N;
+      n += group_pos % GROUP_N;
+
       float acc[16][8];
       memset(acc, 0, sizeof(acc));
       // Mainloop.
@@ -661,6 +678,7 @@ int main() {
 
   m = n = k = 8192;
   int max = 8192;
+  //int max = 16384;
   int numel = max * max;
 
   // Allocate matrices
