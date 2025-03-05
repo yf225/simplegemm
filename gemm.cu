@@ -561,3 +561,7 @@ void run_gemm(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   check(cudaDeviceSynchronize());
   check(cudaGetLastError());
 }
+
+void run_gemm(void* A, void* B, void* C, int M, int N, int K) {
+  run_gemm((bf16*) A, (bf16*)B, (bf16*)C, M, N, K);
+}

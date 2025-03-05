@@ -12,6 +12,7 @@ setup(
                 "op.cpp",
                 "gemm.cu",
             ],
+            extra_link_args=["-lcuda"],
         )
     ],
     cmdclass={"build_ext": BuildExtension.with_options(no_python_abi_suffix=True)},
