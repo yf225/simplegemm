@@ -470,7 +470,7 @@ constexpr int WG_M = 128;
 constexpr int INST_M = 64;
 
 constexpr int WARPGROUP_SIZE = 128;
-constexpr int NUM_CONSUMERS = 1;
+constexpr int NUM_CONSUMERS = 2;
 constexpr int WARPGROUPS = 1 + NUM_CONSUMERS;
 constexpr int NUM_THREADS = WARPGROUPS * WARPGROUP_SIZE;
 
@@ -493,6 +493,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
   // Barriers.
   __shared__ __align__(8) uint64_t prod[STAGES];
   __shared__ __align__(8) uint64_t cons[STAGES];
+  __shared__ __align__(8) uint64_t pingpong[NUM_CONSUMERS];
 
   int tid = threadIdx.x;
   int wgid = tid / WARPGROUP_SIZE;
@@ -502,7 +503,10 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
   if (tid == 0) {
     for (int i = 0; i < STAGES; i++) {
       init_barrier(&prod[i], 0, 1);
-      init_barrier(&cons[i], 0, WARPGROUPS - 1);
+      init_barrier(&cons[i], 0, 1);
+    }
+    for (int i = 0; i < NUM_CONSUMERS; i++) {
+      init_barrier(&pingpong[i], 0, 1);
     }
   }
   __syncthreads();
@@ -548,14 +552,29 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
     // Consumer warpgroup.
     setmaxnreg_inc<232>();
 
+    int cons_id = wgid - 1;
     int stage = 0;
     int phase = 0;
-    if (wg_tid == 0) {
-      for (int i = 0; i < STAGES; i++) {
-        arrive_barrier(&cons[i], 1);
+    int pingpong_phase = 0;
+
+    if (cons_id == 0) {
+      if (wg_tid == 0) {
+        for (int i = 0; i < STAGES; i++) {
+          arrive_barrier(&cons[i], 1);
+        }
       }
     }
-    for (auto bid = blockIdx.x; bid < m_blocks * n_blocks; bid += gridDim.x) {
+
+    if (cons_id == 1) {
+      if (wg_tid == 0) {
+        arrive_barrier(&pingpong[1 - cons_id], 1);
+        //pingpong_phase ^= 1;
+      }
+      phase = phase ^ (((stage + k_blocks) / STAGES) & 1);
+      stage = (stage + k_blocks) % STAGES;
+    }
+
+    for (auto bid = blockIdx.x + gridDim.x * cons_id; bid < m_blocks * n_blocks; bid += (gridDim.x * NUM_CONSUMERS)) {
       auto m = bid / n_blocks;
       auto n = bid % n_blocks;
 
@@ -563,9 +582,12 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       memset(acc, 0, sizeof(acc));
 
       // Mainloop.
+      wait_barrier(&pingpong[cons_id], pingpong_phase);
+      //if (wg_tid == 0) printf("block %d consumer %d (%d, %d)\n", blockIdx.x, cons_id, m, n);
       for (int k = 0; k < k_blocks; k++) {
         // Wait for producer.
         wait_barrier(&prod[stage], phase);
+        //if (wg_tid == 0) printf("block %d consumer %d k-slice %d\n", blockIdx.x, cons_id, k);
 
         wgmma_fence();
 
@@ -576,7 +598,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
             // TODO: the smem.A indexing is horrible garbage, clean that up.
             wgmma128<1, 1, 1, 0, 0>(
                 acc[mma_m],
-                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
+                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k], // + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
                 &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
           }
         }
@@ -594,13 +616,22 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
           phase ^= 1;
         }
       }
+      phase = phase ^ (((stage + k_blocks) / STAGES) & 1);
+      stage = (stage + k_blocks) % STAGES;
+
+      if (wg_tid == 0) {
+        arrive_barrier(&pingpong[1 - cons_id], 1);
+      }
+      pingpong_phase ^= 1;
+
       // Write back to gmem.
       auto warp = wg_tid / 32;
       auto lane = wg_tid % 32;
       auto row = warp * 16 + lane / 4;
       auto col = (wg_tid % 4) * 2;
 
-      row += (wgid - 1) * 64;
+      //row += (wgid - 1) * 64;
+      //row += cons_id * WG_M;
       auto C_BLOCK = &C[m * BLOCK_M + n * BLOCK_N * M];
 
       //printf("%d %d %d\n", tid - 128, row, col);

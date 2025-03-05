@@ -102,6 +102,10 @@ int main() {
   int n = 3 * 12 * 256;
   int k = 1024;
 
+  m = 6 * 11 * 128;
+  n = 6 * 12 * 128;
+  k = 1280;
+
   //m = n = k = 8192;
   //int max = 8192;
   int max = 16384;
@@ -161,8 +165,8 @@ int main() {
       if (std::abs(cv - crefv) > 1e-5) {
         fprintf(
             stderr,
-            "Failed tolerance check at idx %d, C=%f, Cref=%f\n",
-            i,
+            "Failed tolerance check at idx (%d, %d), C=%f, Cref=%f\n",
+            i / n, i % n,
             cv,
             crefv);
         exit(EXIT_FAILURE);
