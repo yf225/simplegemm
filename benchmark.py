@@ -310,7 +310,7 @@ impl_map = {fn.__name__: fn for fn in test_impls}
 def test():
     torch.manual_seed(0)
     m = 4 * 11 * 64
-    n = 12 * 256
+    n = 3 * 12 * 256
     #m, n = 2 * 128, 128
     k = 64 * 4
     a = torch.randn((m, k), device="cuda", dtype=torch.bfloat16)

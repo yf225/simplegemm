@@ -559,7 +559,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       auto m = bid / n_blocks;
       auto n = bid % n_blocks;
 
-      float acc[BLOCK_M / NUM_CONSUMERS / 64][8][8];
+      float acc[WG_M / INST_M][8][8];
       memset(acc, 0, sizeof(acc));
 
       // Mainloop.
