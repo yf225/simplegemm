@@ -36,6 +36,10 @@ void tmaPrint(T s[]) {
   std::cout << "\n";
 }
 
+__device__ inline bf16 f2bf(float v) {
+  return __float2bfloat16(v);
+}
+
 __host__ static inline CUtensorMap create_tma_desc(
     bf16* gmem,
     uint32_t M,
@@ -497,14 +501,14 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         //        row,
         //        col,
         //        acc[n][0]);
-        Cidx(row,     inst_n + col    ) = acc[inst_n / 16][0];
-        Cidx(row,     inst_n + col + 1) = acc[inst_n / 16][1];
-        Cidx(row + 8, inst_n + col    ) = acc[inst_n / 16][2];
-        Cidx(row + 8, inst_n + col + 1) = acc[inst_n / 16][3];
-        Cidx(row,     inst_n + col + 8) = acc[inst_n / 16][4];
-        Cidx(row,     inst_n + col + 9) = acc[inst_n / 16][5];
-        Cidx(row + 8, inst_n + col + 8) = acc[inst_n / 16][6];
-        Cidx(row + 8, inst_n + col + 9) = acc[inst_n / 16][7];
+        Cidx(row,     inst_n + col    ) = f2bf(acc[inst_n / 16][0]);
+        Cidx(row,     inst_n + col + 1) = f2bf(acc[inst_n / 16][1]);
+        Cidx(row + 8, inst_n + col    ) = f2bf(acc[inst_n / 16][2]);
+        Cidx(row + 8, inst_n + col + 1) = f2bf(acc[inst_n / 16][3]);
+        Cidx(row,     inst_n + col + 8) = f2bf(acc[inst_n / 16][4]);
+        Cidx(row,     inst_n + col + 9) = f2bf(acc[inst_n / 16][5]);
+        Cidx(row + 8, inst_n + col + 8) = f2bf(acc[inst_n / 16][6]);
+        Cidx(row + 8, inst_n + col + 9) = f2bf(acc[inst_n / 16][7]);
         // clang-format on
       }
     }
