@@ -1,9 +1,11 @@
 #!/bin/bash
 
-export TORCHINDUCTOR_CACHE_DIR=/tmp/pingpong_matmul_experiments_20250305_4
+export TORCHINDUCTOR_CACHE_DIR=/tmp/pingpong_matmul_experiments_20250305_5
 export TORCHINDUCTOR_CUTLASS_DIR=/data/users/bertrand/cutlass
 #export TORCHINDUCTOR_CUTLASS_ALLOWLIST='128x128x64_1x1x1.*pingpong_epi_tma' # |128x256x64_1x1x1.*cooperative_epi_tma'
-export TORCHINDUCTOR_CUTLASS_ALLOWLIST='128x256x64_1x1x1.*cooperative_epi_nosmem'
+#export TORCHINDUCTOR_CUTLASS_ALLOWLIST='128x256x64_1x1x1.*cooperative_epi_nosmem'
+#export TORCHINDUCTOR_CUTLASS_ALLOWLIST='128x128x64_1x1x1.*pingpong_epi_nosmem'
+export TORCHINDUCTOR_CUTLASS_ALLOWLIST='128x128x64_1x1x1.*pingpong_epi_tma'
 export TORCHINDUCTOR_CUTLASS_DENYLIST='stream_k'
 export TORCHINDUCTOR_CUTLASS_INSTANTIATION_LEVEL=0201
 #export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1

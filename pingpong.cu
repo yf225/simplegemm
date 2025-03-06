@@ -592,17 +592,16 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
 
       // Mainloop.
       wait_barrier(&pingpong[cons_id], pingpong_phase);
-      //if (wg_tid == 0) printf("block %d consumer %d (%d, %d)\n", blockIdx.x, cons_id, m, n);
+      auto prev_stage = stage;
       {
         // Wait for producer.
         wait_barrier(&prod[stage], phase);
-        //if (wg_tid == 0) printf("block %d consumer %d k-slice %d\n", blockIdx.x, cons_id, k);
 
         wgmma_fence();
 
-#pragma unroll
+        #pragma unroll
         for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
-#pragma unroll
+          #pragma unroll
           for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
             // TODO: the smem.A indexing is horrible garbage, clean that up.
             wgmma128<1, 1, 1, 0, 0>(
@@ -613,12 +612,6 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         }
 
         wgmma_commit_group();
-        wgmma_wait_group<0>();
-
-        // Arrive at consumer.
-        if (wg_tid == 0) {
-          arrive_barrier(&cons[stage], 1);
-        }
         stage++;
         if (stage == STAGES)  {
           stage = 0;
@@ -628,13 +621,12 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       for (int k = 1; k < k_blocks; k++) {
         // Wait for producer.
         wait_barrier(&prod[stage], phase);
-        //if (wg_tid == 0) printf("block %d consumer %d k-slice %d\n", blockIdx.x, cons_id, k);
 
         wgmma_fence();
 
-#pragma unroll
+        #pragma unroll
         for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
-#pragma unroll
+          #pragma unroll
           for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
             // TODO: the smem.A indexing is horrible garbage, clean that up.
             wgmma128<1, 1, 1, 0, 0>(
@@ -645,18 +637,23 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         }
 
         wgmma_commit_group();
-        wgmma_wait_group<0>();
+        wgmma_wait_group<1>();
 
         // Arrive at consumer.
         if (wg_tid == 0) {
-          arrive_barrier(&cons[stage], 1);
+          arrive_barrier(&cons[prev_stage], 1);
         }
-        stage++;
+        prev_stage = stage++;
         if (stage == STAGES)  {
           stage = 0;
           phase ^= 1;
         }
       }
+      wgmma_wait_group<0>();
+      if (wg_tid == 0) {
+        arrive_barrier(&cons[prev_stage], 1);
+      }
+
       phase = phase ^ (((stage + k_blocks) / STAGES) & 1);
       stage = (stage + k_blocks) % STAGES;
 
