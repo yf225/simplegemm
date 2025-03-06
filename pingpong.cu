@@ -635,7 +635,9 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       auto C_BLOCK = &C[m * BLOCK_M + n * BLOCK_N * M];
 
       //printf("%d %d %d\n", tid - 128, row, col);
+      #pragma unroll
       for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
+        #pragma unroll
         for (int inst_n = 0; inst_n < BLOCK_N; inst_n += 16) {
 #define Cidx(r, c) C_BLOCK[((r) + mma_m * INST_M) + ((c) * M)]
           // clang-format off
