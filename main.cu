@@ -81,8 +81,8 @@ void print_matrix(bf16* hM, bf16* dM, int M, int N, bool rowmajor) {
   check(cudaMemcpy(hM, dM, sizeof(bf16) * M * N, cudaMemcpyDeviceToHost));
   auto strideM = rowmajor ? N : 1;
   auto strideN = rowmajor ? 1 : M;
-  for (int i = 0; i < 8; i++) {
-    for (int j = 0; j < 8; j++) {
+  for (int i = 0; i < 16; i++) {
+    for (int j = 0; j < 16; j++) {
       printf("  %6.2f", __bfloat162float(hM[i * strideM + j * strideN]));
     }
     printf(" ...\n");
@@ -106,6 +106,9 @@ int main() {
   n = 6 * 12 * 128;
   k = 1280;
 
+  m = 128;
+  n = 128;
+  k = 64;
   //m = n = k = 8192;
   //int max = 8192;
   int max = 16384;
