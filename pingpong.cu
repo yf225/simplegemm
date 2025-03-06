@@ -581,10 +581,51 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       float acc[WG_M / INST_M][8][8];
       memset(acc, 0, sizeof(acc));
 
+      // Fence acc, sigh.
+      for (int i = 0; i < WG_M / INST_M; i++) {
+        for (int j = 0; j < 8; j++) {
+          for (int k = 0; k < 8; k++) {
+            asm volatile("" : "+f"(acc[i][j][k]) :: "memory");
+          }
+        }
+      }
+
       // Mainloop.
       wait_barrier(&pingpong[cons_id], pingpong_phase);
       //if (wg_tid == 0) printf("block %d consumer %d (%d, %d)\n", blockIdx.x, cons_id, m, n);
-      for (int k = 0; k < k_blocks; k++) {
+      {
+        // Wait for producer.
+        wait_barrier(&prod[stage], phase);
+        //if (wg_tid == 0) printf("block %d consumer %d k-slice %d\n", blockIdx.x, cons_id, k);
+
+        wgmma_fence();
+
+#pragma unroll
+        for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
+#pragma unroll
+          for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
+            // TODO: the smem.A indexing is horrible garbage, clean that up.
+            wgmma128<1, 1, 1, 0, 0>(
+                acc[mma_m],
+                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k], // + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
+                &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
+          }
+        }
+
+        wgmma_commit_group();
+        wgmma_wait_group<0>();
+
+        // Arrive at consumer.
+        if (wg_tid == 0) {
+          arrive_barrier(&cons[stage], 1);
+        }
+        stage++;
+        if (stage == STAGES)  {
+          stage = 0;
+          phase ^= 1;
+        }
+      }
+      for (int k = 1; k < k_blocks; k++) {
         // Wait for producer.
         wait_barrier(&prod[stage], phase);
         //if (wg_tid == 0) printf("block %d consumer %d k-slice %d\n", blockIdx.x, cons_id, k);
