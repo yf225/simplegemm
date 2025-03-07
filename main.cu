@@ -1,4 +1,5 @@
-#include "pingpong.cu"
+//#include "pingpong.cu"
+#include "stmatrix.cu"
 
 __global__ void testFill(bf16* X, int M, int N, int parity) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -143,7 +144,7 @@ int main() {
 
   // Run test kernel.
   printf("about to run gemm\n");
-  run_pingpong(A, B, C, m, n, k);
+  run_stmatrix_gemm(A, B, C, m, n, k);
 
   // Print a slab of matrix for sanity.
   print_matrix(hM, A, m, k, true);
@@ -189,7 +190,7 @@ int main() {
     float ms = 0.0f;
     check(cudaEventRecord(start));
     for (int j = 0; j < repeat_times; j++) {
-      run_pingpong(A, B, C, m, n, k);
+      run_stmatrix_gemm(A, B, C, m, n, k);
     }
     check(cudaEventRecord(stop));
     check(cudaEventSynchronize(start));

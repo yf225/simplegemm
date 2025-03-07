@@ -297,11 +297,15 @@ def custom_gemm(a, b):
 def custom_pingpong(a, b):
     return torch.ops.gemm.pingpong(a, b)
 
+def custom_stmatrix_gemm(a, b):
+    return torch.ops.gemm.stmatrix_gemm(a, b)
+
 test_impls = [
     #aten_matmul,
     cutlass_matmul,
     #custom_gemm,
     custom_pingpong,
+    custom_stmatrix_gemm,
 ]
 
 impl_map = {fn.__name__: fn for fn in test_impls}
@@ -340,7 +344,7 @@ def test():
 #x_vals = [(6 * 11 * 128, 3 * 12 * 256, k) for k in range(128, 2048 + 1, 128)]
 #x_vals = [(6 * 11 * 128, 3 * 12 * 256, k) for k in range(640, 640 + 1, 128)]
 x_vals = [
-    #(8192, 8192, 8192),
+    (8192, 8192, 8192),
     (6 * 11 * 128, 6 * 12 * 128, 640),
     (6 * 11 * 128, 6 * 12 * 128, 1280),
 ]

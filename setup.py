@@ -12,6 +12,7 @@ setup(
                 "op.cpp",
                 "gemm.cu",
                 "pingpong.cu",
+                "stmatrix.cu",
             ],
             extra_link_args=["-lcuda"],
         )
