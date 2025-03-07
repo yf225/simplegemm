@@ -466,6 +466,16 @@ __device__ static void tma_store(void const* dst_tma_desc, bf16* src, int N, int
       : "memory");
 }
 
+__device__ static void tma_store_2d(void const* dst_tma_desc, bf16* src, int N, int M) {
+  uint64_t tma_ptr = reinterpret_cast<uint64_t>(dst_tma_desc);
+  uint32_t src_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(src));
+  asm volatile(
+      "cp.async.bulk.tensor.2d.global.shared::cta.tile.bulk_group"
+      " [%0, {%2, %3}], [%1];"
+      :: "l"(tma_ptr), "r"(src_ptr), "r"(N), "r"(M)
+      : "memory");
+}
+
 template<int N>
 __device__ static void tma_wait_group() {
   asm volatile("cp.async.bulk.wait_group %0;" :: "n"(N));
@@ -479,7 +489,7 @@ __device__ static void stmatrix(bf16* smem_ptr, bf16 src[8]) {
   uint32_t smem = static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
   uint32_t* d = reinterpret_cast<uint32_t*>(src);
   asm volatile(
-      "stmatrix.sync.aligned.m8n8.x4.trans.shared::bta.b16 [%0], {%1, %2, %3, %4};"
+      "stmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 [%0], {%1, %2, %3, %4};"
       :: "r"(smem), "r"(d[0]), "r"(d[1]), "r"(d[2]), "r"(d[3]));
 }
 
@@ -503,7 +513,7 @@ struct SharedStorage {
   alignas(128) bf16 C[BLOCK_M * BLOCK_N];
 };
 
-#define USE_TMA_STORE 0
+#define USE_TMA_STORE 1
 __global__ __launch_bounds__(NUM_THREADS) void gemm(
     const __grid_constant__ CUtensorMap A,
     const __grid_constant__ CUtensorMap B,
@@ -705,27 +715,50 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         #pragma unroll
         for (int inst_n = 0; inst_n < BLOCK_N / 16; inst_n++) {
 #define Cidx(r, c) smem.C[row + (r) + mma_m * INST_M + BLOCK_M * (inst_n * 16 + col + (c))]
-          // Cidx(0, 0) = f2bf(acc[mma_m][inst_n][0]);
-          // Cidx(0, 1) = f2bf(acc[mma_m][inst_n][1]);
-          // Cidx(8, 0) = f2bf(acc[mma_m][inst_n][2]);
-          // Cidx(8, 1) = f2bf(acc[mma_m][inst_n][3]);
-          // Cidx(0, 8) = f2bf(acc[mma_m][inst_n][4]);
-          // Cidx(0, 9) = f2bf(acc[mma_m][inst_n][5]);
-          // Cidx(8, 8) = f2bf(acc[mma_m][inst_n][6]);
-          // Cidx(8, 9) = f2bf(acc[mma_m][inst_n][7]);
-          Cidx(0, 0) = f2bf(0.0f + (float)wg_tid * 8);
-          Cidx(0, 1) = f2bf(1.0f + (float)wg_tid * 8);
-          Cidx(8, 0) = f2bf(2.0f + (float)wg_tid * 8);
-          Cidx(8, 1) = f2bf(3.0f + (float)wg_tid * 8);
-          Cidx(0, 8) = f2bf(4.0f + (float)wg_tid * 8);
-          Cidx(0, 9) = f2bf(5.0f + (float)wg_tid * 8);
-          Cidx(8, 8) = f2bf(6.0f + (float)wg_tid * 8);
-          Cidx(8, 9) = f2bf(7.0f + (float)wg_tid * 8);
+          Cidx(0, 0) = f2bf(acc[mma_m][inst_n][0]);
+          Cidx(0, 1) = f2bf(acc[mma_m][inst_n][1]);
+          Cidx(8, 0) = f2bf(acc[mma_m][inst_n][2]);
+          Cidx(8, 1) = f2bf(acc[mma_m][inst_n][3]);
+          Cidx(0, 8) = f2bf(acc[mma_m][inst_n][4]);
+          Cidx(0, 9) = f2bf(acc[mma_m][inst_n][5]);
+          Cidx(8, 8) = f2bf(acc[mma_m][inst_n][6]);
+          Cidx(8, 9) = f2bf(acc[mma_m][inst_n][7]);
+          // Cidx(0, 0) = f2bf(0.0f + (float)wg_tid * 8 + mma_m * 0.1f);
+          // Cidx(0, 1) = f2bf(1.0f + (float)wg_tid * 8 + mma_m * 0.1f);
+          // Cidx(8, 0) = f2bf(2.0f + (float)wg_tid * 8 + mma_m * 0.1f);
+          // Cidx(8, 1) = f2bf(3.0f + (float)wg_tid * 8 + mma_m * 0.1f);
+          // Cidx(0, 8) = f2bf(4.0f + (float)wg_tid * 8 + mma_m * 0.1f);
+          // Cidx(0, 9) = f2bf(5.0f + (float)wg_tid * 8 + mma_m * 0.1f);
+          // Cidx(8, 8) = f2bf(6.0f + (float)wg_tid * 8 + mma_m * 0.1f);
+          // Cidx(8, 9) = f2bf(7.0f + (float)wg_tid * 8 + mma_m * 0.1f);
 #undef Cidx
         }
       }
+
+      // auto tid_offset = warp * 16 + (lane % 8) * BLOCK_M + (lane / 16) * BLOCK_M * 8 + (lane & 8);
+      // bf16* base_addr = &smem.C[tid_offset];
+      // #pragma unroll
+      // for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
+      //   #pragma unroll
+      //   for (int inst_n = 0; inst_n < BLOCK_N / 16; inst_n++) {
+      //     bf16 d[8];
+      //     for (int i = 0; i < 8; i++) {
+      //       d[i] = f2bf(acc[mma_m][inst_n][i]);
+      //     }
+      //     stmatrix(&base_addr[inst_n * 16 * BLOCK_M + mma_m * INST_M], d);
+      //   }
+      // }
+      // asm volatile("bar.sync 0x1, 128;");
+      // if (wg_tid == 0) {
+      //   for (int i = 0; i < 128*128; i++) {
+      //     smem.C[i] = f2bf((float)i);
+      //   }
+      // }
+      asm volatile("bar.sync 0x1, 128;");
+      asm volatile("fence.proxy.async.shared::cta;");
       if (wg_tid == 0) {
-        tma_store(&C, smem.C, n * BLOCK_N, m * BLOCK_M);
+        //printf("doing a tma store from consumer %d\n", cons_id);
+        tma_store_2d(&C, smem.C, m * BLOCK_M, n * BLOCK_N);
         tma_commit_group();
       }
       tma_wait_group<0>();
@@ -760,7 +793,6 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         }
       }
 #endif
-
       if (wg_tid == 0) {
         arrive_barrier(&pingpong[1][1 - cons_id], 1);
       }
@@ -809,7 +841,26 @@ void run_pingpong(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   // Set up TMA descriptors
   auto descA = create_tma_desc(A, M, K, BLOCK_M, BLOCK_K, true);
   auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K, true);
-  auto descC = create_tma_desc(C, N, M, BLOCK_N, BLOCK_M, false);
+  //auto descC = create_tma_desc(C, N, M, BLOCK_N, BLOCK_M, false);
+  uint64_t shapeC[] = {M, N};
+  uint64_t strideC[] = {M * sizeof(bf16)};
+  uint32_t box_shapeC[] = {BLOCK_M, BLOCK_N};
+  uint32_t box_strideC[] = {1, 1};
+  CUtensorMap descC;
+  auto resC = cuTensorMapEncodeTiled(
+      &descC,
+      CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
+      2,
+      C,
+      shapeC,
+      strideC,
+      box_shapeC,
+      box_strideC,
+      CU_TENSOR_MAP_INTERLEAVE_NONE,
+      CU_TENSOR_MAP_SWIZZLE_NONE,
+      CU_TENSOR_MAP_L2_PROMOTION_NONE,
+      CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+  assert(resC == CUDA_SUCCESS);
 
   // Launch kernel!
   gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(
