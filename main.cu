@@ -78,6 +78,24 @@ void randomize_matrix(Gen& generator, bf16 *hM, bf16 *dM, int N) {
   check(cudaMemcpy(dM, hM, sizeof(bf16) * N, cudaMemcpyHostToDevice));
 }
 
+void arange(bf16 *hM, bf16* dM, int M, int N) {
+  for (int m = 0; m < M; m++) {
+    for (int n = 0; n < N; n++) {
+      hM[m * N + n] = m * N + n;
+    }
+  }
+  check(cudaMemcpy(dM, hM, sizeof(bf16) * M * N, cudaMemcpyHostToDevice));
+}
+
+void identity(bf16 *hM, bf16* dM, int M, int N) {
+  for (int m = 0; m < M; m++) {
+    for (int n = 0; n < N; n++) {
+      hM[m + n * M] = (m == n) ? 1.0f : 0.0f;
+    }
+  }
+  check(cudaMemcpy(dM, hM, sizeof(bf16) * M * N, cudaMemcpyHostToDevice));
+}
+
 void print_matrix(bf16* hM, bf16* dM, int M, int N, bool rowmajor) {
   check(cudaMemcpy(hM, dM, sizeof(bf16) * M * N, cudaMemcpyDeviceToHost));
   auto strideM = rowmajor ? N : 1;
@@ -107,8 +125,8 @@ int main() {
   n = 6 * 12 * 128;
   k = 1280;
 
-  m = 128;
-  n = 128;
+  m = 8 * 128;
+  n = 8 * 256;
   k = 64;
   //m = n = k = 8192;
   //int max = 8192;
@@ -132,8 +150,10 @@ int main() {
   //testFill<<<cdiv(numel, 1024), 1024>>>(A, m, k, 1);
   //testFill<<<cdiv(numel, 1024), 1024>>>(B, k, n, -1);
   std::default_random_engine gen(1337);
-  randomize_matrix(gen, hM, A, numel);
-  randomize_matrix(gen, hM, B, numel);
+  //randomize_matrix(gen, hM, A, numel);
+  //randomize_matrix(gen, hM, B, numel);
+  arange(hM, A, m, k);
+  identity(hM, B, k, n);
   //randomize_matrix(gen, hM, C, numel);
   check(cudaMemset(C, 0, sizeof(bf16) * numel));
   check(cudaGetLastError());
@@ -147,10 +167,10 @@ int main() {
   run_stmatrix_gemm(A, B, C, m, n, k);
 
   // Print a slab of matrix for sanity.
-  print_matrix(hM, A, m, k, true);
-  print_matrix(hM, B, k, n, false);
-  print_matrix(hM, C, m, n, false);
-  print_matrix(hM, Cref, m, n, false);
+  printf("A:\n"); print_matrix(hM, A, m, k, true);
+  printf("B:\n"); print_matrix(hM, B, k, n, false);
+  printf("C:\n"); print_matrix(hM, C, m, n, false);
+  printf("Cref:\n"); print_matrix(hM, Cref, m, n, false);
 
   // Test against cuBLAS reference.
   bf16* hostC = nullptr;
