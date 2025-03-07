@@ -507,6 +507,8 @@ constexpr int NUM_CONSUMERS = 2;
 constexpr int WARPGROUPS = 1 + NUM_CONSUMERS;
 constexpr int NUM_THREADS = WARPGROUPS * WARPGROUP_SIZE;
 
+constexpr int GROUP_STRIDE = 2;
+
 struct SharedStorage {
   alignas(128) bf16 A[BLOCK_M * BLOCK_K * STAGES];
   alignas(128) bf16 B[BLOCK_K * BLOCK_N * STAGES];
@@ -565,8 +567,11 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       int phase = 0;
       int stage = 0;
       for (auto bid = blockIdx.x; bid < m_blocks * n_blocks; bid += gridDim.x) {
-        auto m = bid / n_blocks;
-        auto n = bid % n_blocks;
+        //auto m = bid / n_blocks;
+        //auto n = bid % n_blocks;
+        //auto m = bid % m_blocks / 2;
+        auto m = (bid / 2) % m_blocks;
+        auto n = (bid / 2) / m_blocks * 2 + bid % 2;
 
         for (int k = 0; k < k_blocks ; k++) {
           // Wait for consumer.
@@ -616,8 +621,10 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
     }
 
     for (auto bid = blockIdx.x + gridDim.x * cons_id; bid < m_blocks * n_blocks; bid += (gridDim.x * NUM_CONSUMERS)) {
-      auto m = bid / n_blocks;
-      auto n = bid % n_blocks;
+      // auto m = bid / n_blocks;
+      // auto n = bid % n_blocks;
+      auto m = (bid / 2) % m_blocks;
+      auto n = (bid / 2) / m_blocks * 2 + bid % 2;
 
       float acc[WG_M / INST_M][8][8];
       memset(acc, 0, sizeof(acc));
