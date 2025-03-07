@@ -47,7 +47,8 @@ __host__ static inline CUtensorMap create_tma_desc(
     uint32_t N,
     uint32_t BLOCK_M,
     uint32_t BLOCK_N,
-    bool swizzle) {
+    bool swizzle,
+    bool padding) {
   CUtensorMap tma_desc;
   // TODO: Check these requirements against the HW spec.
   assert(BLOCK_N >= 64);
@@ -57,7 +58,7 @@ __host__ static inline CUtensorMap create_tma_desc(
   // TODO" why the 64 inner dim?
   uint64_t shape[5] = {64, M, N / 64};
   uint64_t stride[5] = {sizeof(bf16) * N, 64 * sizeof(bf16)};
-  uint32_t box_shape[5] = {64, BLOCK_M, BLOCK_N / 64};
+  uint32_t box_shape[5] = {padding ? 72 : 64, BLOCK_M, BLOCK_N / 64};
   uint32_t box_stride[5] = {1, 1, 1};
 
   //for (int i = 0; i < 5; i++)
@@ -404,7 +405,8 @@ struct SharedStorage {
   alignas(128) bf16 A[BLOCK_M * BLOCK_K * STAGES];
   alignas(128) bf16 B[BLOCK_K * BLOCK_N * STAGES];
   //alignas(128) bf16 C[BLOCK_N * (BLOCK_M + (BLOCK_M / 64) * 8)]; // padding of 8 elements per consumer
-  alignas(128) bf16 C[BLOCK_N * BLOCK_M]; // padding of 8 elements per consumer
+  //alignas(128) bf16 C[BLOCK_N * BLOCK_M]; // padding of 8 elements per consumer
+  alignas(128) bf16 C[BLOCK_N * (BLOCK_M + NUM_CONSUMERS * 8)]; // padding of 8 elements per consumer
 };
 
 __global__ __launch_bounds__(NUM_THREADS) void gemm(
@@ -519,12 +521,13 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       }
 
       constexpr int BLOCK_M_WG = BLOCK_M / NUM_CONSUMERS;
+      constexpr int BLOCK_M_WG_PAD = BLOCK_M / NUM_CONSUMERS + 8;
       auto cid = wgid - 1;
       auto lane = wg_tid % 32;
       auto warp = wg_tid / 32;
-      bf16* block_sC = smem.C + cid * BLOCK_M_WG * BLOCK_N;
-      auto tid_offset = warp * 16 + (lane % 8) * BLOCK_M_WG;
-      tid_offset += (lane / 16) * BLOCK_M_WG * 8 + (lane & 8);
+      bf16* block_sC = smem.C + cid * BLOCK_M_WG_PAD * BLOCK_N;
+      auto tid_offset = warp * 16 + (lane % 8) * BLOCK_M_WG_PAD;
+      tid_offset += (lane / 16) * BLOCK_M_WG_PAD * 8 + (lane & 8);
       uint32_t base_addr = static_cast<uint32_t>(__cvta_generic_to_shared(block_sC)) + tid_offset * sizeof(bf16);
 
       asm volatile("cp.async.bulk.wait_group 0;");
@@ -533,7 +536,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       bf16 acc_bf16[8];
       int* acc_ptr = (int*)acc_bf16;
       for (int inst_n = 0; inst_n < INST_N; inst_n += 16) {
-        uint32_t addr = base_addr + inst_n * BLOCK_M_WG * sizeof(bf16);
+        uint32_t addr = base_addr + inst_n * BLOCK_M_WG_PAD * sizeof(bf16);
         for (int i = 0; i < 8; i++) {
           acc_bf16[i] = f2bf(acc[inst_n / 16][i]);
         }
@@ -561,9 +564,9 @@ void run_stmatrix_gemm(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
       gemm, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
   // Set up TMA descriptors
-  auto descA = create_tma_desc(A, M, K, BLOCK_M, BLOCK_K, true);
-  auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K, true);
-  auto descC = create_tma_desc(C, N, M, BLOCK_N, BLOCK_M / NUM_CONSUMERS, false);
+  auto descA = create_tma_desc(A, M, K, BLOCK_M, BLOCK_K, true, false);
+  auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K, true, false);
+  auto descC = create_tma_desc(C, N, M, BLOCK_N, BLOCK_M / NUM_CONSUMERS, false, true);
 
   // Launch kernel!
   gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(descA, descB, descC, M, N, K);
