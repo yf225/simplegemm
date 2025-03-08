@@ -47,7 +47,8 @@ __host__ static inline CUtensorMap create_tma_desc(
     uint32_t N,
     uint32_t BLOCK_M,
     uint32_t BLOCK_N,
-    bool swizzle) {
+    bool swizzle,
+bool pad = false) {
   CUtensorMap tma_desc;
   // TODO: Check these requirements against the HW spec.
   assert(BLOCK_N >= 64);
@@ -57,7 +58,7 @@ __host__ static inline CUtensorMap create_tma_desc(
   // TODO" why the 64 inner dim?
   uint64_t shape[] = {64, M, N / 64};
   uint64_t stride[] = {sizeof(bf16) * N, 64 * sizeof(bf16)};
-  uint32_t box_shape[] = {64, BLOCK_M, BLOCK_N / 64};
+  uint32_t box_shape[] = {pad ? 72 : 64, BLOCK_M, BLOCK_N / 64};
   uint32_t box_stride[] = {1, 1, 1};
 
   auto result = cuTensorMapEncodeTiled(
@@ -501,6 +502,7 @@ constexpr int STAGES = 6;
 
 constexpr int WG_M = 128;
 constexpr int INST_M = 64;
+constexpr int INST_M_PAD = INST_M + 8;
 
 constexpr int WARPGROUP_SIZE = 128;
 constexpr int NUM_CONSUMERS = 2;
@@ -746,15 +748,16 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
               "{%1, %2, %3, %4};"
               :: "r"(smem_addr), "r"(r[0]), "r"(r[1]), "r"(r[2]), "r"(r[3]));
         }
+        asm volatile("fence.proxy.async.shared::cta;");
+        if (wg_tid == 0) {
+          tma_store(&C, &smem.C[mma_m * INST_M * BLOCK_N], m * BLOCK_M + mma_m * INST_M, n * BLOCK_N);
+          //tma_store(&C, &smem.C[INST_M * BLOCK_N], m * BLOCK_M + INST_M, n * BLOCK_N);
+          tma_commit_group();
+        }
       }
 
-      asm volatile("bar.sync 0x1, 128;");
-      asm volatile("fence.proxy.async.shared::cta;");
-      if (wg_tid == 0) {
-        tma_store(&C, smem.C, m * BLOCK_M, n * BLOCK_N);
-        tma_store(&C, &smem.C[INST_M * BLOCK_N], m * BLOCK_M + INST_M, n * BLOCK_N);
-        tma_commit_group();
-      }
+      //asm volatile("bar.sync 0x1, 128;");
+      //asm volatile("fence.proxy.async.shared::cta;");
       tma_wait_group<0>();
       if (wg_tid == 0) {
         arrive_barrier(&pingpong[1][1 - cons_id], 1);
@@ -775,7 +778,7 @@ void run_pingpong(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   // Set up TMA descriptors
   auto descA = create_tma_desc(A, M, K, BLOCK_M, BLOCK_K, true);
   auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K, true);
-  auto descC = create_tma_desc(C, N, M, BLOCK_N, INST_M, false);
+  auto descC = create_tma_desc(C, N, M, BLOCK_N, INST_M, false, false);
   // uint64_t shapeC[] = {M, N};
   // uint64_t strideC[] = {M * sizeof(bf16)};
   // uint32_t box_shapeC[] = {BLOCK_M, BLOCK_N};
