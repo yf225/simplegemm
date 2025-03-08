@@ -14,6 +14,7 @@ setup(
                 "pingpong.cu",
                 "stmatrix.cu",
             ],
+            extra_compile_args=["-lineinfo"],
             extra_link_args=["-lcuda"],
         )
     ],

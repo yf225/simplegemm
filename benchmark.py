@@ -301,7 +301,7 @@ def custom_stmatrix_gemm(a, b):
     return torch.ops.gemm.stmatrix_gemm(a, b)
 
 test_impls = [
-    #aten_matmul,
+    aten_matmul,
     cutlass_matmul,
     #custom_gemm,
     custom_pingpong,
@@ -400,7 +400,7 @@ def prof(M, N, K, provider="matmul_persistent_tma_ws_pingpong"):
     a = torch.randn((M, K), device="cuda", dtype=torch.bfloat16)
     b = torch.randn((N, K), device="cuda", dtype=torch.bfloat16).T
     #kwargs = {"dump_chrome_trace": True} if provider is "matmul_ws_automatic" else {}
-    impl_map[provider](a, b, **kwargs)
+    impl_map[provider](a, b)
 
 def trace():
     M, N, K = 4 * 11 * 128, 4 * 12 * 128, 640
@@ -421,8 +421,9 @@ def trace():
         torch.cuda.synchronize()
     p.export_chrome_trace("prof.json")
 
-test()
+#test()
 benchmark.run(show_plots=True, print_data=True)
-#prof(4 * 11 * 128, 4 * 12 * 128, 640, provider="matmul_ws_automatic")
-#prof(4 * 11 * 128, 4 * 12 * 128, 640, provider="cutlass_matmul")
+#prof(6 * 11 * 128, 6 * 12 * 128, 1280, provider="cutlass_matmul")
+#prof(6 * 11 * 128, 6 * 12 * 128, 1280, provider="custom_pingpong")
+
 print("OK")

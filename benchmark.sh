@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export TORCHINDUCTOR_CACHE_DIR=/tmp/pingpong_matmul_experiments_20250305_9998_2
+export TORCHINDUCTOR_CACHE_DIR=/tmp/pingpong_matmul_experiments_20250305_9998_4
 export TORCHINDUCTOR_CUTLASS_DIR=/data/users/bertrand/cutlass
 export TORCHINDUCTOR_CUTLASS_ALLOWLIST='128x128x64_1x1x1.*pingpong_epi_tma'
 export TORCHINDUCTOR_CUTLASS_DENYLIST='stream_k'
@@ -35,4 +35,5 @@ if false; then
 fi
 
 export BENCHMARK_CUTLASS=1
+#TRITON_ALWAYS_COMPILE=1 TRITON_KERNEL_OVERRIDE=1 ./denoise-h100.sh ncu -o gemm.profile -f --import-source yes --set full --target-processes all $RUN_COMMAND
 TRITON_ALWAYS_COMPILE=1 TRITON_KERNEL_OVERRIDE=1 ./denoise-h100.sh $RUN_COMMAND

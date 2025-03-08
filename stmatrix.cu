@@ -545,7 +545,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
             "{%1, %2, %3, %4};"
             :: "r"(addr), "r"(acc_ptr[0]), "r"(acc_ptr[1]), "r"(acc_ptr[2]), "r"(acc_ptr[3]));
       }
-      asm volatile("bar.sync %0, 128;" :: "r"(cid + 2) : "memory");
+      //asm volatile("bar.sync %0, 128;" :: "r"(cid + 2) : "memory");
       asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
 
       if (wg_tid == 0) {
