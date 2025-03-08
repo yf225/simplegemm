@@ -713,130 +713,57 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       wait_barrier(&pingpong[1][cons_id], pingpong_phase);
       auto warp = wg_tid / 32;
       auto lane = wg_tid % 32;
-      auto row = warp * 16 + lane / 4;
-      auto col = (wg_tid % 4) * 2;
 
-#if USE_TMA_STORE
+      // stmatrix layout is a little mad, but matches the layout of the 8x8
+      // matrices in
+      // https://docs.nvidia.com/cuda/parallel-thread-execution/#wgmma-64n16-d
+      // The key to remember here is that the data is already laid out in
+      // registers the way stmatrix expects it.  Your job is just to set the
+      // address right in each thread; the addresses aren't really related to
+      // the data in any meaningul way.
+      auto base_x1_row = warp * 16;
+      auto base_x4_row = base_x1_row + (lane / 8 % 2) * 8;
+      auto base_x4_col = lane % 8 + lane / 16 * 8;
+
+      auto base_addr = base_x4_row + INST_M * base_x4_col;
+
+
       #pragma unroll
       for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
         #pragma unroll
         for (int inst_n = 0; inst_n < BLOCK_N / 16; inst_n++) {
-#define Cidx(r, c) smem.C[row + (r) + mma_m * INST_M + BLOCK_M * (inst_n * 16 + col + (c))]
-          Cidx(0, 0) = f2bf(acc[mma_m][inst_n][0]);
-          Cidx(0, 1) = f2bf(acc[mma_m][inst_n][1]);
-          Cidx(8, 0) = f2bf(acc[mma_m][inst_n][2]);
-          Cidx(8, 1) = f2bf(acc[mma_m][inst_n][3]);
-          Cidx(0, 8) = f2bf(acc[mma_m][inst_n][4]);
-          Cidx(0, 9) = f2bf(acc[mma_m][inst_n][5]);
-          Cidx(8, 8) = f2bf(acc[mma_m][inst_n][6]);
-          Cidx(8, 9) = f2bf(acc[mma_m][inst_n][7]);
-          // Cidx(0, 0) = f2bf(0.0f + (float)wg_tid * 8 + mma_m * 0.1f);
-          // Cidx(0, 1) = f2bf(1.0f + (float)wg_tid * 8 + mma_m * 0.1f);
-          // Cidx(8, 0) = f2bf(2.0f + (float)wg_tid * 8 + mma_m * 0.1f);
-          // Cidx(8, 1) = f2bf(3.0f + (float)wg_tid * 8 + mma_m * 0.1f);
-          // Cidx(0, 8) = f2bf(4.0f + (float)wg_tid * 8 + mma_m * 0.1f);
-          // Cidx(0, 9) = f2bf(5.0f + (float)wg_tid * 8 + mma_m * 0.1f);
-          // Cidx(8, 8) = f2bf(6.0f + (float)wg_tid * 8 + mma_m * 0.1f);
-          // Cidx(8, 9) = f2bf(7.0f + (float)wg_tid * 8 + mma_m * 0.1f);
-#undef Cidx
+          auto mma_row = mma_m * INST_M * BLOCK_N;
+          auto regs_col = inst_n * 16 * INST_M;
+          auto addr = base_addr + mma_row + regs_col;
+          bf16 acc_bf16[8];
+          for (int i = 0; i < 8; i++) {
+            acc_bf16[i] = f2bf(acc[mma_m][inst_n][i]);
+          }
+          uint32_t* r = (uint32_t*)acc_bf16;
+          uint32_t smem_addr = static_cast<uint32_t>(__cvta_generic_to_shared(&smem.C[addr]));;
+          asm volatile(
+              "stmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 [%0], "
+              "{%1, %2, %3, %4};"
+              :: "r"(smem_addr), "r"(r[0]), "r"(r[1]), "r"(r[2]), "r"(r[3]));
         }
       }
 
-      // auto tid_offset = warp * 16 + (lane % 8) * BLOCK_M + (lane / 16) * BLOCK_M * 8 + (lane & 8);
-      // bf16* base_addr = &smem.C[tid_offset];
-      // #pragma unroll
-      // for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
-      //   #pragma unroll
-      //   for (int inst_n = 0; inst_n < BLOCK_N / 16; inst_n++) {
-      //     bf16 d[8];
-      //     for (int i = 0; i < 8; i++) {
-      //       d[i] = f2bf(acc[mma_m][inst_n][i]);
-      //     }
-      //     stmatrix(&base_addr[inst_n * 16 * BLOCK_M + mma_m * INST_M], d);
-      //   }
-      // }
-      // asm volatile("bar.sync 0x1, 128;");
-      // if (wg_tid == 0) {
-      //   for (int i = 0; i < 128*128; i++) {
-      //     smem.C[i] = f2bf((float)i);
-      //   }
-      // }
       asm volatile("bar.sync 0x1, 128;");
       asm volatile("fence.proxy.async.shared::cta;");
       if (wg_tid == 0) {
-        //printf("doing a tma store from consumer %d\n", cons_id);
-        tma_store_2d(&C, smem.C, m * BLOCK_M, n * BLOCK_N);
+        tma_store(&C, smem.C, m * BLOCK_M, n * BLOCK_N);
+        tma_store(&C, &smem.C[INST_M * BLOCK_N], m * BLOCK_M + INST_M, n * BLOCK_N);
         tma_commit_group();
       }
       tma_wait_group<0>();
-#else
-      auto C_BLOCK = &C[m * BLOCK_M + n * BLOCK_N * M];
-      #pragma unroll
-      for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
-        #pragma unroll
-        //for (int inst_n = 0; inst_n < BLOCK_N; inst_n += 16) {
-        for (int inst_n = 0; inst_n < BLOCK_N / 16; inst_n++) {
-#define Cidx(r, c) C_BLOCK[row + (r) + mma_m * INST_M + M * (inst_n * 16 + col + (c))]
-          Cidx(0, 0) = f2bf(acc[mma_m][inst_n][0]);
-          Cidx(0, 1) = f2bf(acc[mma_m][inst_n][1]);
-          Cidx(8, 0) = f2bf(acc[mma_m][inst_n][2]);
-          Cidx(8, 1) = f2bf(acc[mma_m][inst_n][3]);
-          Cidx(0, 8) = f2bf(acc[mma_m][inst_n][4]);
-          Cidx(0, 9) = f2bf(acc[mma_m][inst_n][5]);
-          Cidx(8, 8) = f2bf(acc[mma_m][inst_n][6]);
-          Cidx(8, 9) = f2bf(acc[mma_m][inst_n][7]);
-// #define Cidx(r, c) C_BLOCK[((r) + mma_m * INST_M) + ((c) * M)]
-//           // clang-format off
-//           Cidx(row,     inst_n + col    ) = f2bf(acc[mma_m][inst_n / 16][0]);
-//           Cidx(row,     inst_n + col + 1) = f2bf(acc[mma_m][inst_n / 16][1]);
-//           Cidx(row + 8, inst_n + col    ) = f2bf(acc[mma_m][inst_n / 16][2]);
-//           Cidx(row + 8, inst_n + col + 1) = f2bf(acc[mma_m][inst_n / 16][3]);
-//           Cidx(row,     inst_n + col + 8) = f2bf(acc[mma_m][inst_n / 16][4]);
-//           Cidx(row,     inst_n + col + 9) = f2bf(acc[mma_m][inst_n / 16][5]);
-//           Cidx(row + 8, inst_n + col + 8) = f2bf(acc[mma_m][inst_n / 16][6]);
-//           Cidx(row + 8, inst_n + col + 9) = f2bf(acc[mma_m][inst_n / 16][7]);
-//           // clang-format on
-#undef Cidx
-        }
-      }
-#endif
       if (wg_tid == 0) {
         arrive_barrier(&pingpong[1][1 - cons_id], 1);
       }
       pingpong_phase ^= 1;
-
-    // auto row = (wg_tid / 32) * 2 + wg_tid / 4;
-    // if (tid == 128) {
-    //   for (int i = 0; i < 16; i++) {
-    //     for (int j = 0; j < 8; j++) {
-    //       printf("  %6.2f", acc[i][j]);
-    //     }
-    //     printf("\n");
-    //   }
-    //   printf("\n");
-    // }
     }
   }
-  // __syncthreads();
-  // if (tid == 128) {
-  //   printf("smem.A:\n");
-  //   for (int i = 0; i < BLOCK_M; i++) {
-  //     for (int j = 0; j < BLOCK_K; j++) {
-  //       printf("  %6.2f", __bfloat162float(smem.A[i * BLOCK_K + j]));
-  //     }
-  //     printf("\n");
-  //   }
-  //   printf("\n");
-  //   printf("smem.B:\n");
-  //   for (int i = 0; i < BLOCK_K; i++) {
-  //     for (int j = 0; j < BLOCK_N; j++) {
-  //       printf("  %6.2f", __bfloat162float(smem.B[i + j * BLOCK_K]));
-  //     }
-  //     printf("\n");
-  //   }
-  //   printf("\n");
-  // }
 }
+
 } // namespace
 
 void run_pingpong(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
@@ -848,26 +775,26 @@ void run_pingpong(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   // Set up TMA descriptors
   auto descA = create_tma_desc(A, M, K, BLOCK_M, BLOCK_K, true);
   auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K, true);
-  //auto descC = create_tma_desc(C, N, M, BLOCK_N, BLOCK_M, false);
-  uint64_t shapeC[] = {M, N};
-  uint64_t strideC[] = {M * sizeof(bf16)};
-  uint32_t box_shapeC[] = {BLOCK_M, BLOCK_N};
-  uint32_t box_strideC[] = {1, 1};
-  CUtensorMap descC;
-  auto resC = cuTensorMapEncodeTiled(
-      &descC,
-      CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
-      2,
-      C,
-      shapeC,
-      strideC,
-      box_shapeC,
-      box_strideC,
-      CU_TENSOR_MAP_INTERLEAVE_NONE,
-      CU_TENSOR_MAP_SWIZZLE_NONE,
-      CU_TENSOR_MAP_L2_PROMOTION_NONE,
-      CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-  assert(resC == CUDA_SUCCESS);
+  auto descC = create_tma_desc(C, N, M, BLOCK_N, INST_M, false);
+  // uint64_t shapeC[] = {M, N};
+  // uint64_t strideC[] = {M * sizeof(bf16)};
+  // uint32_t box_shapeC[] = {BLOCK_M, BLOCK_N};
+  // uint32_t box_strideC[] = {1, 1};
+  // CUtensorMap descC;
+  // auto resC = cuTensorMapEncodeTiled(
+  //     &descC,
+  //     CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
+  //     2,
+  //     C,
+  //     shapeC,
+  //     strideC,
+  //     box_shapeC,
+  //     box_strideC,
+  //     CU_TENSOR_MAP_INTERLEAVE_NONE,
+  //     CU_TENSOR_MAP_SWIZZLE_NONE,
+  //     CU_TENSOR_MAP_L2_PROMOTION_NONE,
+  //     CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+  // assert(resC == CUDA_SUCCESS);
 
   // Launch kernel!
   gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(
