@@ -512,9 +512,9 @@ constexpr int NUM_THREADS = WARPGROUPS * WARPGROUP_SIZE;
 constexpr int GROUP_STRIDE = 2;
 
 struct SharedStorage {
-  alignas(128) bf16 A[BLOCK_M * BLOCK_K * STAGES];
-  alignas(128) bf16 B[BLOCK_K * BLOCK_N * STAGES];
-  alignas(128) bf16 C[BLOCK_M * BLOCK_N];
+  alignas(256) bf16 A[BLOCK_M * BLOCK_K * STAGES];
+  alignas(256) bf16 B[BLOCK_K * BLOCK_N * STAGES];
+  alignas(256) bf16 C[BLOCK_M * BLOCK_N] __attribute__((aligned(256)));
 };
 
 #define USE_TMA_STORE 1
@@ -532,7 +532,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
   // Producer buffers for A and B.
   extern __shared__ __align__(128) uint8_t dynamic_smem[];
   SharedStorage& smem = *reinterpret_cast<SharedStorage*>(dynamic_smem);
-
+  //if (blockIdx.x == 0 && threadIdx.x == 0) { printf("smem.C addr %p\n", smem.C); }
   // Barriers.
   __shared__ __align__(8) uint64_t prod[STAGES];
   __shared__ __align__(8) uint64_t cons[STAGES];
@@ -737,6 +737,11 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
           auto mma_row = mma_m * INST_M * BLOCK_N;
           auto regs_col = inst_n * 16 * INST_M;
           auto addr = base_addr + mma_row + regs_col;
+          ///*auto swizzle_*/ addr = addr ^ ((lane & 0x7) << 3); // ^ (((uint32_t)smem.C & 0x80 >> 4));
+          //addr = addr ^ (((lane & 0x7) + (((uint32_t)smem.C &0x80) >>7)) << 3);
+          auto smem_bias = (((uint32_t)smem.C) & 0x80) >> 7;
+          auto lane_swizzle = ((lane + smem_bias) & 0x7) << 3;
+          addr = addr ^ lane_swizzle;
           bf16 acc_bf16[8];
           for (int i = 0; i < 8; i++) {
             acc_bf16[i] = f2bf(acc[mma_m][inst_n][i]);
@@ -778,7 +783,7 @@ void run_pingpong(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   // Set up TMA descriptors
   auto descA = create_tma_desc(A, M, K, BLOCK_M, BLOCK_K, true);
   auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K, true);
-  auto descC = create_tma_desc(C, N, M, BLOCK_N, INST_M, false, false);
+  auto descC = create_tma_desc(C, N, M, BLOCK_N, INST_M, true, false);
   // uint64_t shapeC[] = {M, N};
   // uint64_t strideC[] = {M * sizeof(bf16)};
   // uint32_t box_shapeC[] = {BLOCK_M, BLOCK_N};
