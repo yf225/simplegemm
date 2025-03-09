@@ -123,11 +123,11 @@ int main() {
 
   m = 6 * 11 * 128;
   n = 6 * 12 * 128;
-  k = 1280;
+  k = 640;
 
-  m = 8 * 128;
-  n = 8 * 256;
-  k = 64;
+  // m = 8 * 128;
+  // n = 8 * 256;
+  // k = 64;
   //m = n = k = 8192;
   //int max = 8192;
   int max = 16384;
@@ -150,10 +150,10 @@ int main() {
   //testFill<<<cdiv(numel, 1024), 1024>>>(A, m, k, 1);
   //testFill<<<cdiv(numel, 1024), 1024>>>(B, k, n, -1);
   std::default_random_engine gen(1337);
-  //randomize_matrix(gen, hM, A, numel);
-  //randomize_matrix(gen, hM, B, numel);
-  arange(hM, A, m, k);
-  identity(hM, B, k, n);
+  randomize_matrix(gen, hM, A, numel);
+  randomize_matrix(gen, hM, B, numel);
+  //arange(hM, A, m, k);
+  //identity(hM, B, k, n);
   //randomize_matrix(gen, hM, C, numel);
   check(cudaMemset(C, 0, sizeof(bf16) * numel));
   check(cudaGetLastError());
