@@ -250,9 +250,7 @@ __device__ static void __forceinline__ tma_load(
   uint32_t dst_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(dst));
   asm volatile(
       "cp.async.bulk.tensor.3d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
-      " [%0], [%1, {%3, %4, %5}], [%2];"
-      ::
-      "r"(dst_ptr),
+      " [%0], [%1, {%3, %4, %5}], [%2];" ::"r"(dst_ptr),
       "l"(tma_ptr),
       "r"(bar_ptr),
       "n"(0),
@@ -261,19 +259,26 @@ __device__ static void __forceinline__ tma_load(
       : "memory");
 }
 
-__device__ static void tma_store(void const* dst_tma_desc, bf16* src, int N, int M) {
+__device__ static void tma_store(
+    void const* dst_tma_desc,
+    bf16* src,
+    int N,
+    int M) {
   uint64_t tma_ptr = reinterpret_cast<uint64_t>(dst_tma_desc);
   uint32_t src_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(src));
   asm volatile(
       "cp.async.bulk.tensor.3d.global.shared::cta.tile.bulk_group"
-      " [%0, {%2, %3, %4}], [%1];"
-      :: "l"(tma_ptr), "r"(src_ptr), "n"(0), "r"(M), "r"(N / 64)
+      " [%0, {%2, %3, %4}], [%1];" ::"l"(tma_ptr),
+      "r"(src_ptr),
+      "n"(0),
+      "r"(M),
+      "r"(N / 64)
       : "memory");
 }
 
-template<int N>
+template <int N>
 __device__ static void tma_wait_group() {
-  asm volatile("cp.async.bulk.wait_group %0;" :: "n"(N));
+  asm volatile("cp.async.bulk.wait_group %0;" ::"n"(N));
 }
 
 __device__ static void tma_commit_group() {
@@ -284,8 +289,12 @@ __device__ static void stmatrix(bf16* smem_ptr, bf16 src[8]) {
   uint32_t smem = static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
   uint32_t* d = reinterpret_cast<uint32_t*>(src);
   asm volatile(
-      "stmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 [%0], {%1, %2, %3, %4};"
-      :: "r"(smem), "r"(d[0]), "r"(d[1]), "r"(d[2]), "r"(d[3]));
+      "stmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 [%0], {%1, %2, %3, %4};" ::
+          "r"(smem),
+      "r"(d[0]),
+      "r"(d[1]),
+      "r"(d[2]),
+      "r"(d[3]));
 }
 
 __device__ static void fence_async_proxy() {
@@ -296,7 +305,7 @@ __device__ static void __forceinline__ fence_memory(float regs[2][8][8]) {
   for (int i = 0; i < 2; i++) {
     for (int j = 0; j < 8; j++) {
       for (int k = 0; k < 8; k++) {
-        asm volatile("" : "+f"(regs[i][j][k]) :: "memory");
+        asm volatile("" : "+f"(regs[i][j][k])::"memory");
       }
     }
   }
@@ -375,9 +384,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
   if (wgid == 0) {
     // Producer warpgroup.
     setmaxnreg_dec<40>();
-    // Mainloop.
 
-    //int m = 0, n = 0;
     if (wg_tid == 0) {
       int phase = 0;
       int stage = 0;
@@ -385,16 +392,27 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         auto m = (bid / 2) % m_blocks;
         auto n = (bid / 2) / m_blocks * 2 + bid % 2;
 
-        for (int k = 0; k < k_blocks ; k++) {
+        for (int k = 0; k < k_blocks; k++) {
           // Wait for consumer.
           wait_barrier(&cons[stage], phase);
           // Set expect bytes for TMA.
           expect_bytes(
-              &prod[stage], sizeof(bf16) * (BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N));
+              &prod[stage],
+              sizeof(bf16) * (BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N));
           // Load A.
-          tma_load(&smem.A[stage * BLOCK_K * BLOCK_M], &A, &prod[stage], k * BLOCK_K, m * BLOCK_M);
+          tma_load(
+              &smem.A[stage * BLOCK_K * BLOCK_M],
+              &A,
+              &prod[stage],
+              k * BLOCK_K,
+              m * BLOCK_M);
           // Load B.
-          tma_load(&smem.B[stage * BLOCK_K * BLOCK_N], &B, &prod[stage], k * BLOCK_K, n * BLOCK_N);
+          tma_load(
+              &smem.B[stage * BLOCK_K * BLOCK_N],
+              &B,
+              &prod[stage],
+              k * BLOCK_K,
+              n * BLOCK_N);
           stage_next(stage, phase);
         }
       }
@@ -422,7 +440,8 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       stage_advance(stage, phase, k_blocks);
     }
 
-    for (auto bid = blockIdx.x + gridDim.x * cons_id; bid < m_blocks * n_blocks; bid += (gridDim.x * NUM_CONSUMERS)) {
+    for (auto bid = blockIdx.x + gridDim.x * cons_id; bid < m_blocks * n_blocks;
+         bid += (gridDim.x * NUM_CONSUMERS)) {
       auto m = (bid / 2) % m_blocks;
       auto n = (bid / 2) / m_blocks * 2 + bid % 2;
 
@@ -444,7 +463,9 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
           for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
             wgmma128<1, 1, 1, 0, 0>(
                 acc[mma_m],
-                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k],
+                &smem
+                     .A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K +
+                        mma_k],
                 &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
           }
         }
@@ -464,7 +485,9 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
           for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
             wgmma128<1, 1, 1, 0, 0>(
                 acc[mma_m],
-                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k],
+                &smem
+                     .A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K +
+                        mma_k],
                 &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
           }
         }
@@ -515,7 +538,10 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
           auto mma_row = mma_m * INST_M * BLOCK_N;
           auto regs_col = inst_n * 16 * INST_M;
           auto addr = base_addr + mma_row + regs_col;
-          auto smem_bias = (static_cast<uint32_t>(__cvta_generic_to_shared(smem.C)) & 0x80) >> 7;
+          auto smem_bias =
+              (static_cast<uint32_t>(__cvta_generic_to_shared(smem.C)) &
+               0x80) >>
+              7;
           auto lane_swizzle = ((lane + smem_bias) & 0x7) << 3;
           addr = addr ^ lane_swizzle;
           bf16 acc_bf16[8];
@@ -526,7 +552,11 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         }
         fence_async_proxy();
         if (wg_tid == 0) {
-          tma_store(&C, &smem.C[mma_m * INST_M * BLOCK_N], m * BLOCK_M + mma_m * INST_M, n * BLOCK_N);
+          tma_store(
+              &C,
+              &smem.C[mma_m * INST_M * BLOCK_N],
+              m * BLOCK_M + mma_m * INST_M,
+              n * BLOCK_N);
           tma_commit_group();
         }
       }
@@ -554,11 +584,9 @@ void run_pingpong(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
   auto descC = create_tma_desc(C, N, M, BLOCK_N, INST_M);
 
   // Launch kernel!
-  gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(
-      descA, descB, descC,
-      M, N, K);
+  gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(descA, descB, descC, M, N, K);
 }
 
 void run_pingpong(void* A, void* B, void* C, int M, int N, int K) {
-  run_pingpong((bf16*) A, (bf16*)B, (bf16*)C, M, N, K);
+  run_pingpong((bf16*)A, (bf16*)B, (bf16*)C, M, N, K);
 }
