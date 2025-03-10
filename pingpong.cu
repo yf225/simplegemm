@@ -288,6 +288,16 @@ __device__ static void stmatrix(bf16* smem_ptr, bf16 src[8]) {
       :: "r"(smem), "r"(d[0]), "r"(d[1]), "r"(d[2]), "r"(d[3]));
 }
 
+__device__ static void __forceinline__ fence_memory(float regs[2][8][8]) {
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 8; j++) {
+      for (int k = 0; k < 8; k++) {
+        asm volatile("" : "+f"(regs[i][j][k]) :: "memory");
+      }
+    }
+  }
+}
+
 constexpr int BLOCK_M = 128;
 constexpr int BLOCK_N = 128;
 constexpr int BLOCK_K = 64;
@@ -308,6 +318,19 @@ struct SharedStorage {
   alignas(256) bf16 C[BLOCK_M * BLOCK_N] __attribute__((aligned(256)));
 };
 
+__device__ static inline void stage_next(int& stage, int& phase) {
+  stage++;
+  if (stage == STAGES) {
+    stage = 0;
+    phase ^= 1;
+  }
+}
+
+__device__ static inline void stage_advance(int& stage, int& phase, int steps) {
+  phase = phase ^ (((stage + steps) / STAGES) & 1);
+  stage = (stage + steps) % STAGES;
+}
+
 __global__ __launch_bounds__(NUM_THREADS) void gemm(
     const __grid_constant__ CUtensorMap A,
     const __grid_constant__ CUtensorMap B,
@@ -318,7 +341,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
   // Producer buffers for A and B.
   extern __shared__ __align__(128) uint8_t dynamic_smem[];
   SharedStorage& smem = *reinterpret_cast<SharedStorage*>(dynamic_smem);
-  //if (blockIdx.x == 0 && threadIdx.x == 0) { printf("smem.C addr %p\n", smem.C); }
+
   // Barriers.
   __shared__ __align__(8) uint64_t prod[STAGES];
   __shared__ __align__(8) uint64_t cons[STAGES];
@@ -360,21 +383,15 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
 
         for (int k = 0; k < k_blocks ; k++) {
           // Wait for consumer.
-          // TODO: stage and phase update.
           wait_barrier(&cons[stage], phase);
           // Set expect bytes for TMA.
           expect_bytes(
               &prod[stage], sizeof(bf16) * (BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N));
           // Load A.
-          // TODO: use proper stage
           tma_load(&smem.A[stage * BLOCK_K * BLOCK_M], &A, &prod[stage], k * BLOCK_K, m * BLOCK_M);
           // Load B.
           tma_load(&smem.B[stage * BLOCK_K * BLOCK_N], &B, &prod[stage], k * BLOCK_K, n * BLOCK_N);
-          stage++;
-          if (stage == STAGES) {
-            stage = 0;
-            phase ^= 1;
-          }
+          stage_next(stage, phase);
         }
       }
     }
@@ -387,11 +404,9 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
     int phase = 0;
     int pingpong_phase = 0;
 
-    if (cons_id == 0) {
-      if (wg_tid == 0) {
-        for (int i = 0; i < STAGES; i++) {
-          arrive_barrier(&cons[i], 1);
-        }
+    if (cons_id == 0 && wg_tid == 0) {
+      for (int i = 0; i < STAGES; i++) {
+        arrive_barrier(&cons[i], 1);
       }
     }
 
@@ -400,8 +415,7 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         arrive_barrier(&pingpong[0][1 - cons_id], 1);
         arrive_barrier(&pingpong[1][1 - cons_id], 1);
       }
-      phase = phase ^ (((stage + k_blocks) / STAGES) & 1);
-      stage = (stage + k_blocks) % STAGES;
+      stage_advance(stage, phase, k_blocks);
     }
 
     for (auto bid = blockIdx.x + gridDim.x * cons_id; bid < m_blocks * n_blocks; bid += (gridDim.x * NUM_CONSUMERS)) {
@@ -410,58 +424,43 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
 
       float acc[WG_M / INST_M][8][8];
       memset(acc, 0, sizeof(acc));
+      fence_memory(acc);
 
-      // Fence acc, sigh.
-      for (int i = 0; i < WG_M / INST_M; i++) {
-        for (int j = 0; j < 8; j++) {
-          for (int k = 0; k < 8; k++) {
-            asm volatile("" : "+f"(acc[i][j][k]) :: "memory");
-          }
-        }
-      }
-
-      // Mainloop.
+      // Mainloop, peeled to fill wgmma_commit_group pipeline.
       wait_barrier(&pingpong[0][cons_id], pingpong_phase);
       auto prev_stage = stage;
       {
         // Wait for producer.
         wait_barrier(&prod[stage], phase);
-
         wgmma_fence();
 
         #pragma unroll
         for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
           #pragma unroll
           for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
-            // TODO: the smem.A indexing is horrible garbage, clean that up.
             wgmma128<1, 1, 1, 0, 0>(
                 acc[mma_m],
-                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k], // + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
+                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k],
                 &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
           }
         }
 
         wgmma_commit_group();
-        stage++;
-        if (stage == STAGES)  {
-          stage = 0;
-          phase ^= 1;
-        }
+        stage_next(stage, phase);
       }
+      // Mainloop.
       for (int k = 1; k < k_blocks; k++) {
         // Wait for producer.
         wait_barrier(&prod[stage], phase);
-
         wgmma_fence();
 
         #pragma unroll
         for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
           #pragma unroll
           for (int mma_k = 0; mma_k < BLOCK_K; mma_k += 16) {
-            // TODO: the smem.A indexing is horrible garbage, clean that up.
             wgmma128<1, 1, 1, 0, 0>(
                 acc[mma_m],
-                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k], // + (wgid - 1) * BLOCK_K * (BLOCK_M / 2)],
+                &smem.A[stage * BLOCK_M * BLOCK_K + mma_m * INST_M * BLOCK_K + mma_k],
                 &smem.B[stage * BLOCK_N * BLOCK_K + mma_k]);
           }
         }
@@ -473,19 +472,16 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         if (wg_tid == 0) {
           arrive_barrier(&cons[prev_stage], 1);
         }
-        prev_stage = stage++;
-        if (stage == STAGES)  {
-          stage = 0;
-          phase ^= 1;
-        }
+        prev_stage = stage;
+        stage_next(stage, phase);
       }
       wgmma_wait_group<0>();
       if (wg_tid == 0) {
         arrive_barrier(&cons[prev_stage], 1);
       }
 
-      phase = phase ^ (((stage + k_blocks) / STAGES) & 1);
-      stage = (stage + k_blocks) % STAGES;
+      // Next k blocks handle by other pingpong consumer.
+      stage_advance(stage, phase, k_blocks);
 
       if (wg_tid == 0) {
         arrive_barrier(&pingpong[0][1 - cons_id], 1);
@@ -493,8 +489,6 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
 
       // Write back to gmem.
       wait_barrier(&pingpong[1][cons_id], pingpong_phase);
-      auto warp = wg_tid / 32;
-      auto lane = wg_tid % 32;
 
       // stmatrix layout is a little mad, but matches the layout of the 8x8
       // matrices in
@@ -503,12 +497,12 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       // registers the way stmatrix expects it.  Your job is just to set the
       // address right in each thread; the addresses aren't really related to
       // the data in any meaningul way.
+      auto warp = wg_tid / 32;
+      auto lane = wg_tid % 32;
       auto base_x1_row = warp * 16;
       auto base_x4_row = base_x1_row + (lane / 8 % 2) * 8;
       auto base_x4_col = lane % 8 + lane / 16 * 8;
-
       auto base_addr = base_x4_row + INST_M * base_x4_col;
-
 
       #pragma unroll
       for (int mma_m = 0; mma_m < WG_M / INST_M; mma_m++) {
@@ -517,8 +511,6 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
           auto mma_row = mma_m * INST_M * BLOCK_N;
           auto regs_col = inst_n * 16 * INST_M;
           auto addr = base_addr + mma_row + regs_col;
-          ///*auto swizzle_*/ addr = addr ^ ((lane & 0x7) << 3); // ^ (((uint32_t)smem.C & 0x80 >> 4));
-          //addr = addr ^ (((lane & 0x7) + (((uint32_t)smem.C &0x80) >>7)) << 3);
           auto smem_bias = (((uint32_t)smem.C) & 0x80) >> 7;
           auto lane_swizzle = ((lane + smem_bias) & 0x7) << 3;
           addr = addr ^ lane_swizzle;
@@ -536,13 +528,10 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
         asm volatile("fence.proxy.async.shared::cta;");
         if (wg_tid == 0) {
           tma_store(&C, &smem.C[mma_m * INST_M * BLOCK_N], m * BLOCK_M + mma_m * INST_M, n * BLOCK_N);
-          //tma_store(&C, &smem.C[INST_M * BLOCK_N], m * BLOCK_M + INST_M, n * BLOCK_N);
           tma_commit_group();
         }
       }
 
-      //asm volatile("bar.sync 0x1, 128;");
-      //asm volatile("fence.proxy.async.shared::cta;");
       tma_wait_group<0>();
       if (wg_tid == 0) {
         arrive_barrier(&pingpong[1][1 - cons_id], 1);

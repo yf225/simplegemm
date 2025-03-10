@@ -420,7 +420,7 @@ def trace():
         torch.cuda.synchronize()
     p.export_chrome_trace("prof.json")
 
-test()
+#test()
 benchmark.run(show_plots=True, print_data=True, save_path=".")
 #prof(6 * 11 * 128, 6 * 12 * 128, 1280, provider="cutlass_matmul")
 #prof(6 * 11 * 128, 6 * 12 * 128, 1280, provider="custom_pingpong")
