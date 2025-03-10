@@ -288,6 +288,10 @@ __device__ static void stmatrix(bf16* smem_ptr, bf16 src[8]) {
       :: "r"(smem), "r"(d[0]), "r"(d[1]), "r"(d[2]), "r"(d[3]));
 }
 
+__device__ static void fence_async_proxy() {
+  asm volatile("fence.proxy.async.shared::cta;");
+}
+
 __device__ static void __forceinline__ fence_memory(float regs[2][8][8]) {
   for (int i = 0; i < 2; i++) {
     for (int j = 0; j < 8; j++) {
@@ -511,21 +515,16 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
           auto mma_row = mma_m * INST_M * BLOCK_N;
           auto regs_col = inst_n * 16 * INST_M;
           auto addr = base_addr + mma_row + regs_col;
-          auto smem_bias = (((uint32_t)smem.C) & 0x80) >> 7;
+          auto smem_bias = (static_cast<uint32_t>(__cvta_generic_to_shared(smem.C)) & 0x80) >> 7;
           auto lane_swizzle = ((lane + smem_bias) & 0x7) << 3;
           addr = addr ^ lane_swizzle;
           bf16 acc_bf16[8];
           for (int i = 0; i < 8; i++) {
             acc_bf16[i] = f2bf(acc[mma_m][inst_n][i]);
           }
-          uint32_t* r = (uint32_t*)acc_bf16;
-          uint32_t smem_addr = static_cast<uint32_t>(__cvta_generic_to_shared(&smem.C[addr]));;
-          asm volatile(
-              "stmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 [%0], "
-              "{%1, %2, %3, %4};"
-              :: "r"(smem_addr), "r"(r[0]), "r"(r[1]), "r"(r[2]), "r"(r[3]));
+          stmatrix(&smem.C[addr], acc_bf16);
         }
-        asm volatile("fence.proxy.async.shared::cta;");
+        fence_async_proxy();
         if (wg_tid == 0) {
           tma_store(&C, &smem.C[mma_m * INST_M * BLOCK_N], m * BLOCK_M + mma_m * INST_M, n * BLOCK_N);
           tma_commit_group();
