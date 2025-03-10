@@ -308,15 +308,10 @@ struct SharedStorage {
   alignas(256) bf16 C[BLOCK_M * BLOCK_N] __attribute__((aligned(256)));
 };
 
-#define USE_TMA_STORE 1
 __global__ __launch_bounds__(NUM_THREADS) void gemm(
     const __grid_constant__ CUtensorMap A,
     const __grid_constant__ CUtensorMap B,
-#if USE_TMA_STORE
     const __grid_constant__ CUtensorMap C,
-#else
-    bf16* C,
-#endif
     int M,
     int N,
     int K) {
@@ -360,9 +355,6 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       int phase = 0;
       int stage = 0;
       for (auto bid = blockIdx.x; bid < m_blocks * n_blocks; bid += gridDim.x) {
-        //auto m = bid / n_blocks;
-        //auto n = bid % n_blocks;
-        //auto m = bid % m_blocks / 2;
         auto m = (bid / 2) % m_blocks;
         auto n = (bid / 2) / m_blocks * 2 + bid % 2;
 
@@ -407,15 +399,12 @@ __global__ __launch_bounds__(NUM_THREADS) void gemm(
       if (wg_tid == 0) {
         arrive_barrier(&pingpong[0][1 - cons_id], 1);
         arrive_barrier(&pingpong[1][1 - cons_id], 1);
-        //pingpong_phase ^= 1;
       }
       phase = phase ^ (((stage + k_blocks) / STAGES) & 1);
       stage = (stage + k_blocks) % STAGES;
     }
 
     for (auto bid = blockIdx.x + gridDim.x * cons_id; bid < m_blocks * n_blocks; bid += (gridDim.x * NUM_CONSUMERS)) {
-      // auto m = bid / n_blocks;
-      // auto n = bid % n_blocks;
       auto m = (bid / 2) % m_blocks;
       auto n = (bid / 2) / m_blocks * 2 + bid % 2;
 
