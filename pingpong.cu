@@ -28,15 +28,6 @@ __host__ __device__ int cdiv(int m, int n) {
   return (m + n - 1) / n;
 }
 
-
-template <typename T>
-void tmaPrint(T s[]) {
-  for (int i = 0; i < 3; i++) {
-    std::cout << "  " << s[i];
-  }
-  std::cout << "\n";
-}
-
 __device__ inline bf16 f2bf(float v) {
   return __float2bfloat16(v);
 }
@@ -46,19 +37,14 @@ __host__ static inline CUtensorMap create_tma_desc(
     uint32_t M,
     uint32_t N,
     uint32_t BLOCK_M,
-    uint32_t BLOCK_N,
-    bool swizzle,
-bool pad = false) {
+    uint32_t BLOCK_N) {
   CUtensorMap tma_desc;
-  // TODO: Check these requirements against the HW spec.
   assert(BLOCK_N >= 64);
   assert(N % 64 == 0);
 
-  // TODO: cdiv?
-  // TODO" why the 64 inner dim?
   uint64_t shape[] = {64, M, N / 64};
   uint64_t stride[] = {sizeof(bf16) * N, 64 * sizeof(bf16)};
-  uint32_t box_shape[] = {pad ? 72 : 64, BLOCK_M, BLOCK_N / 64};
+  uint32_t box_shape[] = {64, BLOCK_M, BLOCK_N / 64};
   uint32_t box_stride[] = {1, 1, 1};
 
   auto result = cuTensorMapEncodeTiled(
@@ -71,7 +57,7 @@ bool pad = false) {
       box_shape,
       box_stride,
       CU_TENSOR_MAP_INTERLEAVE_NONE,
-      swizzle ? CU_TENSOR_MAP_SWIZZLE_128B : CU_TENSOR_MAP_SWIZZLE_NONE,
+      CU_TENSOR_MAP_SWIZZLE_128B,
       CU_TENSOR_MAP_L2_PROMOTION_NONE,
       CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
 
@@ -102,14 +88,7 @@ template <int ScaleD, int ScaleA, int ScaleB, int TransA, int TransB>
 __device__ __forceinline__ void wgmma256(float d[16][8], bf16* sA, bf16* sB) {
   uint64_t desc_a = make_smem_desc(&sA[0]);
   uint64_t desc_b = make_smem_desc(&sB[0]);
-  // if (threadIdx.x == 128) {
-
-  //   printf("%llx\n", desc_a);
-
-  //   printf("%llx\n", desc_b);
-  // }
-
-#if 1
+  // clang-format off
   asm volatile(
       "{\n"
       "wgmma.mma_async.sync.aligned.m64n256k16.f32.bf16.bf16 "
@@ -133,134 +112,22 @@ __device__ __forceinline__ void wgmma256(float d[16][8], bf16* sA, bf16* sB) {
       " %129,"
       " %130,    %131,  %132,  %133,  %134;\n"
       "}\n"
-      : "+f"(d[0][0]),
-        "+f"(d[0][1]),
-        "+f"(d[0][2]),
-        "+f"(d[0][3]),
-        "+f"(d[0][4]),
-        "+f"(d[0][5]),
-        "+f"(d[0][6]),
-        "+f"(d[0][7]),
-        "+f"(d[1][0]),
-        "+f"(d[1][1]),
-        "+f"(d[1][2]),
-        "+f"(d[1][3]),
-        "+f"(d[1][4]),
-        "+f"(d[1][5]),
-        "+f"(d[1][6]),
-        "+f"(d[1][7]),
-        "+f"(d[2][0]),
-        "+f"(d[2][1]),
-        "+f"(d[2][2]),
-        "+f"(d[2][3]),
-        "+f"(d[2][4]),
-        "+f"(d[2][5]),
-        "+f"(d[2][6]),
-        "+f"(d[2][7]),
-        "+f"(d[3][0]),
-        "+f"(d[3][1]),
-        "+f"(d[3][2]),
-        "+f"(d[3][3]),
-        "+f"(d[3][4]),
-        "+f"(d[3][5]),
-        "+f"(d[3][6]),
-        "+f"(d[3][7]),
-        "+f"(d[4][0]),
-        "+f"(d[4][1]),
-        "+f"(d[4][2]),
-        "+f"(d[4][3]),
-        "+f"(d[4][4]),
-        "+f"(d[4][5]),
-        "+f"(d[4][6]),
-        "+f"(d[4][7]),
-        "+f"(d[5][0]),
-        "+f"(d[5][1]),
-        "+f"(d[5][2]),
-        "+f"(d[5][3]),
-        "+f"(d[5][4]),
-        "+f"(d[5][5]),
-        "+f"(d[5][6]),
-        "+f"(d[5][7]),
-        "+f"(d[6][0]),
-        "+f"(d[6][1]),
-        "+f"(d[6][2]),
-        "+f"(d[6][3]),
-        "+f"(d[6][4]),
-        "+f"(d[6][5]),
-        "+f"(d[6][6]),
-        "+f"(d[6][7]),
-        "+f"(d[7][0]),
-        "+f"(d[7][1]),
-        "+f"(d[7][2]),
-        "+f"(d[7][3]),
-        "+f"(d[7][4]),
-        "+f"(d[7][5]),
-        "+f"(d[7][6]),
-        "+f"(d[7][7]),
-        "+f"(d[8][0]),
-        "+f"(d[8][1]),
-        "+f"(d[8][2]),
-        "+f"(d[8][3]),
-        "+f"(d[8][4]),
-        "+f"(d[8][5]),
-        "+f"(d[8][6]),
-        "+f"(d[8][7]),
-        "+f"(d[9][0]),
-        "+f"(d[9][1]),
-        "+f"(d[9][2]),
-        "+f"(d[9][3]),
-        "+f"(d[9][4]),
-        "+f"(d[9][5]),
-        "+f"(d[9][6]),
-        "+f"(d[9][7]),
-        "+f"(d[10][0]),
-        "+f"(d[10][1]),
-        "+f"(d[10][2]),
-        "+f"(d[10][3]),
-        "+f"(d[10][4]),
-        "+f"(d[10][5]),
-        "+f"(d[10][6]),
-        "+f"(d[10][7]),
-        "+f"(d[11][0]),
-        "+f"(d[11][1]),
-        "+f"(d[11][2]),
-        "+f"(d[11][3]),
-        "+f"(d[11][4]),
-        "+f"(d[11][5]),
-        "+f"(d[11][6]),
-        "+f"(d[11][7]),
-        "+f"(d[12][0]),
-        "+f"(d[12][1]),
-        "+f"(d[12][2]),
-        "+f"(d[12][3]),
-        "+f"(d[12][4]),
-        "+f"(d[12][5]),
-        "+f"(d[12][6]),
-        "+f"(d[12][7]),
-        "+f"(d[13][0]),
-        "+f"(d[13][1]),
-        "+f"(d[13][2]),
-        "+f"(d[13][3]),
-        "+f"(d[13][4]),
-        "+f"(d[13][5]),
-        "+f"(d[13][6]),
-        "+f"(d[13][7]),
-        "+f"(d[14][0]),
-        "+f"(d[14][1]),
-        "+f"(d[14][2]),
-        "+f"(d[14][3]),
-        "+f"(d[14][4]),
-        "+f"(d[14][5]),
-        "+f"(d[14][6]),
-        "+f"(d[14][7]),
-        "+f"(d[15][0]),
-        "+f"(d[15][1]),
-        "+f"(d[15][2]),
-        "+f"(d[15][3]),
-        "+f"(d[15][4]),
-        "+f"(d[15][5]),
-        "+f"(d[15][6]),
-        "+f"(d[15][7])
+      : "+f"(d[0][0]), "+f"(d[0][1]), "+f"(d[0][2]), "+f"(d[0][3]), "+f"(d[0][4]), "+f"(d[0][5]), "+f"(d[0][6]), "+f"(d[0][7]),
+        "+f"(d[1][0]), "+f"(d[1][1]), "+f"(d[1][2]), "+f"(d[1][3]), "+f"(d[1][4]), "+f"(d[1][5]), "+f"(d[1][6]), "+f"(d[1][7]),
+        "+f"(d[2][0]), "+f"(d[2][1]), "+f"(d[2][2]), "+f"(d[2][3]), "+f"(d[2][4]), "+f"(d[2][5]), "+f"(d[2][6]), "+f"(d[2][7]),
+        "+f"(d[3][0]), "+f"(d[3][1]), "+f"(d[3][2]), "+f"(d[3][3]), "+f"(d[3][4]), "+f"(d[3][5]), "+f"(d[3][6]), "+f"(d[3][7]),
+        "+f"(d[4][0]), "+f"(d[4][1]), "+f"(d[4][2]), "+f"(d[4][3]), "+f"(d[4][4]), "+f"(d[4][5]), "+f"(d[4][6]), "+f"(d[4][7]),
+        "+f"(d[5][0]), "+f"(d[5][1]), "+f"(d[5][2]), "+f"(d[5][3]), "+f"(d[5][4]), "+f"(d[5][5]), "+f"(d[5][6]), "+f"(d[5][7]),
+        "+f"(d[6][0]), "+f"(d[6][1]), "+f"(d[6][2]), "+f"(d[6][3]), "+f"(d[6][4]), "+f"(d[6][5]), "+f"(d[6][6]), "+f"(d[6][7]),
+        "+f"(d[7][0]), "+f"(d[7][1]), "+f"(d[7][2]), "+f"(d[7][3]), "+f"(d[7][4]), "+f"(d[7][5]), "+f"(d[7][6]), "+f"(d[7][7]),
+        "+f"(d[8][0]), "+f"(d[8][1]), "+f"(d[8][2]), "+f"(d[8][3]), "+f"(d[8][4]), "+f"(d[8][5]), "+f"(d[8][6]), "+f"(d[8][7]),
+        "+f"(d[9][0]), "+f"(d[9][1]), "+f"(d[9][2]), "+f"(d[9][3]), "+f"(d[9][4]), "+f"(d[9][5]), "+f"(d[9][6]), "+f"(d[9][7]),
+        "+f"(d[10][0]), "+f"(d[10][1]), "+f"(d[10][2]), "+f"(d[10][3]), "+f"(d[10][4]), "+f"(d[10][5]), "+f"(d[10][6]), "+f"(d[10][7]),
+        "+f"(d[11][0]), "+f"(d[11][1]), "+f"(d[11][2]), "+f"(d[11][3]), "+f"(d[11][4]), "+f"(d[11][5]), "+f"(d[11][6]), "+f"(d[11][7]),
+        "+f"(d[12][0]), "+f"(d[12][1]), "+f"(d[12][2]), "+f"(d[12][3]), "+f"(d[12][4]), "+f"(d[12][5]), "+f"(d[12][6]), "+f"(d[12][7]),
+        "+f"(d[13][0]), "+f"(d[13][1]), "+f"(d[13][2]), "+f"(d[13][3]), "+f"(d[13][4]), "+f"(d[13][5]), "+f"(d[13][6]), "+f"(d[13][7]),
+        "+f"(d[14][0]), "+f"(d[14][1]), "+f"(d[14][2]), "+f"(d[14][3]), "+f"(d[14][4]), "+f"(d[14][5]), "+f"(d[14][6]), "+f"(d[14][7]),
+        "+f"(d[15][0]), "+f"(d[15][1]), "+f"(d[15][2]), "+f"(d[15][3]), "+f"(d[15][4]), "+f"(d[15][5]), "+f"(d[15][6]), "+f"(d[15][7])
       : "l"(desc_a),
         "l"(desc_b),
         "n"(int32_t(ScaleD)),
@@ -268,21 +135,14 @@ __device__ __forceinline__ void wgmma256(float d[16][8], bf16* sA, bf16* sB) {
         "n"(int32_t(ScaleB)),
         "n"(int32_t(TransA)),
         "n"(int32_t(TransB)));
-#endif
+  // clang-format on
 }
 
 template <int ScaleD, int ScaleA, int ScaleB, int TransA, int TransB>
 __device__ __forceinline__ void wgmma128(float d[8][8], bf16* sA, bf16* sB) {
   uint64_t desc_a = make_smem_desc(&sA[0]);
   uint64_t desc_b = make_smem_desc(&sB[0]);
-  // if (threadIdx.x == 128) {
-
-  //   printf("%llx\n", desc_a);
-
-  //   printf("%llx\n", desc_b);
-  // }
-
-#if 1
+  // clang-format off
   asm volatile(
       "{\n"
       "wgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16 "
@@ -298,70 +158,14 @@ __device__ __forceinline__ void wgmma128(float d[8][8], bf16* sA, bf16* sB) {
       " %65,"
       " %66,    %67,  %68,  %69,  %70;\n"
       "}\n"
-      : "+f"(d[0][0]),
-        "+f"(d[0][1]),
-        "+f"(d[0][2]),
-        "+f"(d[0][3]),
-        "+f"(d[0][4]),
-        "+f"(d[0][5]),
-        "+f"(d[0][6]),
-        "+f"(d[0][7]),
-        "+f"(d[1][0]),
-        "+f"(d[1][1]),
-        "+f"(d[1][2]),
-        "+f"(d[1][3]),
-        "+f"(d[1][4]),
-        "+f"(d[1][5]),
-        "+f"(d[1][6]),
-        "+f"(d[1][7]),
-        "+f"(d[2][0]),
-        "+f"(d[2][1]),
-        "+f"(d[2][2]),
-        "+f"(d[2][3]),
-        "+f"(d[2][4]),
-        "+f"(d[2][5]),
-        "+f"(d[2][6]),
-        "+f"(d[2][7]),
-        "+f"(d[3][0]),
-        "+f"(d[3][1]),
-        "+f"(d[3][2]),
-        "+f"(d[3][3]),
-        "+f"(d[3][4]),
-        "+f"(d[3][5]),
-        "+f"(d[3][6]),
-        "+f"(d[3][7]),
-        "+f"(d[4][0]),
-        "+f"(d[4][1]),
-        "+f"(d[4][2]),
-        "+f"(d[4][3]),
-        "+f"(d[4][4]),
-        "+f"(d[4][5]),
-        "+f"(d[4][6]),
-        "+f"(d[4][7]),
-        "+f"(d[5][0]),
-        "+f"(d[5][1]),
-        "+f"(d[5][2]),
-        "+f"(d[5][3]),
-        "+f"(d[5][4]),
-        "+f"(d[5][5]),
-        "+f"(d[5][6]),
-        "+f"(d[5][7]),
-        "+f"(d[6][0]),
-        "+f"(d[6][1]),
-        "+f"(d[6][2]),
-        "+f"(d[6][3]),
-        "+f"(d[6][4]),
-        "+f"(d[6][5]),
-        "+f"(d[6][6]),
-        "+f"(d[6][7]),
-        "+f"(d[7][0]),
-        "+f"(d[7][1]),
-        "+f"(d[7][2]),
-        "+f"(d[7][3]),
-        "+f"(d[7][4]),
-        "+f"(d[7][5]),
-        "+f"(d[7][6]),
-        "+f"(d[7][7])
+      : "+f"(d[0][0]), "+f"(d[0][1]), "+f"(d[0][2]), "+f"(d[0][3]), "+f"(d[0][4]), "+f"(d[0][5]), "+f"(d[0][6]), "+f"(d[0][7]),
+        "+f"(d[1][0]), "+f"(d[1][1]), "+f"(d[1][2]), "+f"(d[1][3]), "+f"(d[1][4]), "+f"(d[1][5]), "+f"(d[1][6]), "+f"(d[1][7]),
+        "+f"(d[2][0]), "+f"(d[2][1]), "+f"(d[2][2]), "+f"(d[2][3]), "+f"(d[2][4]), "+f"(d[2][5]), "+f"(d[2][6]), "+f"(d[2][7]),
+        "+f"(d[3][0]), "+f"(d[3][1]), "+f"(d[3][2]), "+f"(d[3][3]), "+f"(d[3][4]), "+f"(d[3][5]), "+f"(d[3][6]), "+f"(d[3][7]),
+        "+f"(d[4][0]), "+f"(d[4][1]), "+f"(d[4][2]), "+f"(d[4][3]), "+f"(d[4][4]), "+f"(d[4][5]), "+f"(d[4][6]), "+f"(d[4][7]),
+        "+f"(d[5][0]), "+f"(d[5][1]), "+f"(d[5][2]), "+f"(d[5][3]), "+f"(d[5][4]), "+f"(d[5][5]), "+f"(d[5][6]), "+f"(d[5][7]),
+        "+f"(d[6][0]), "+f"(d[6][1]), "+f"(d[6][2]), "+f"(d[6][3]), "+f"(d[6][4]), "+f"(d[6][5]), "+f"(d[6][6]), "+f"(d[6][7]),
+        "+f"(d[7][0]), "+f"(d[7][1]), "+f"(d[7][2]), "+f"(d[7][3]), "+f"(d[7][4]), "+f"(d[7][5]), "+f"(d[7][6]), "+f"(d[7][7])
       : "l"(desc_a),
         "l"(desc_b),
         "n"(int32_t(ScaleD)),
@@ -369,7 +173,7 @@ __device__ __forceinline__ void wgmma128(float d[8][8], bf16* sA, bf16* sB) {
         "n"(int32_t(ScaleB)),
         "n"(int32_t(TransA)),
         "n"(int32_t(TransB)));
-#endif
+  // clang-format on
 }
 
 __device__ void wgmma_commit_group() {
@@ -467,16 +271,6 @@ __device__ static void tma_store(void const* dst_tma_desc, bf16* src, int N, int
       : "memory");
 }
 
-__device__ static void tma_store_2d(void const* dst_tma_desc, bf16* src, int N, int M) {
-  uint64_t tma_ptr = reinterpret_cast<uint64_t>(dst_tma_desc);
-  uint32_t src_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(src));
-  asm volatile(
-      "cp.async.bulk.tensor.2d.global.shared::cta.tile.bulk_group"
-      " [%0, {%2, %3}], [%1];"
-      :: "l"(tma_ptr), "r"(src_ptr), "r"(N), "r"(M)
-      : "memory");
-}
-
 template<int N>
 __device__ static void tma_wait_group() {
   asm volatile("cp.async.bulk.wait_group %0;" :: "n"(N));
@@ -502,14 +296,11 @@ constexpr int STAGES = 6;
 
 constexpr int WG_M = 128;
 constexpr int INST_M = 64;
-constexpr int INST_M_PAD = INST_M + 8;
 
 constexpr int WARPGROUP_SIZE = 128;
 constexpr int NUM_CONSUMERS = 2;
 constexpr int WARPGROUPS = 1 + NUM_CONSUMERS;
 constexpr int NUM_THREADS = WARPGROUPS * WARPGROUP_SIZE;
-
-constexpr int GROUP_STRIDE = 2;
 
 struct SharedStorage {
   alignas(256) bf16 A[BLOCK_M * BLOCK_K * STAGES];
@@ -781,37 +572,13 @@ void run_pingpong(bf16* A, bf16* B, bf16* C, int M, int N, int K) {
       gemm, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
   // Set up TMA descriptors
-  auto descA = create_tma_desc(A, M, K, BLOCK_M, BLOCK_K, true);
-  auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K, true);
-  auto descC = create_tma_desc(C, N, M, BLOCK_N, INST_M, true, false);
-  // uint64_t shapeC[] = {M, N};
-  // uint64_t strideC[] = {M * sizeof(bf16)};
-  // uint32_t box_shapeC[] = {BLOCK_M, BLOCK_N};
-  // uint32_t box_strideC[] = {1, 1};
-  // CUtensorMap descC;
-  // auto resC = cuTensorMapEncodeTiled(
-  //     &descC,
-  //     CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
-  //     2,
-  //     C,
-  //     shapeC,
-  //     strideC,
-  //     box_shapeC,
-  //     box_strideC,
-  //     CU_TENSOR_MAP_INTERLEAVE_NONE,
-  //     CU_TENSOR_MAP_SWIZZLE_NONE,
-  //     CU_TENSOR_MAP_L2_PROMOTION_NONE,
-  //     CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-  // assert(resC == CUDA_SUCCESS);
+  auto descA = create_tma_desc(A, M, K, BLOCK_M, BLOCK_K);
+  auto descB = create_tma_desc(B, N, K, BLOCK_N, BLOCK_K);
+  auto descC = create_tma_desc(C, N, M, BLOCK_N, INST_M);
 
   // Launch kernel!
   gemm<<<NUM_SMS, NUM_THREADS, smem_size>>>(
-      descA, descB,
-#if USE_TMA_STORE
-      descC,
-#else
-      C,
-#endif
+      descA, descB, descC,
       M, N, K);
 }
 
