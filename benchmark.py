@@ -346,7 +346,8 @@ def test():
 #x_vals = [(6 * 11 * 128, 3 * 12 * 256, k) for k in range(640, 640 + 1, 128)]
 x_vals = [
     (8192, 8192, 8192),
-] + [
+]
+x_vals = [
     (6 * 11 * 128, 6 * 12 * 128, 64 * k)
     for k in range(1, 32)
 ]
@@ -358,17 +359,22 @@ x_vals = [
 configs = []
 configs.append(
     triton.testing.Benchmark(
-        x_names=["M", "N", "K"],  # Argument names to use as an x-axis for the plot
-        x_vals=x_vals,
+        x_names=["K"],  # Argument names to use as an x-axis for the plot
+        x_vals=[64 * k for k in range(1, 32)],
         line_arg="provider",  # Argument name whose value corresponds to a different line in the plot
         # Possible values for `line_arg`
         # Don't compare to cublas for fp8 cases as torch.matmul doesn't support fp8 at the moment.
         line_vals=[fn.__name__ for fn in test_impls],
-        line_names=[fn.__name__ for fn in test_impls],
+        line_names=[
+            "Torch (cuBLAS)",
+            "Cutlass (no clusters)",
+            "Custom CUDA",
+            "Triton",
+        ],
         # styles=[("red", "-"), ("green", "-"), ("blue", "-")],
         ylabel="TFLOPS",  # Label name for the y-axis
-        plot_name="matmul-performance-" + ("fp16"),  # Name for the plot, used also as a file name for saving the plot.
-        args={},
+        plot_name="pingpong-gemm-performance-bf16",
+        args={"M": 6 * 11 * 128, "N": 6 * 12 * 128},
     ))
 
 
@@ -388,26 +394,12 @@ def benchmark(M, N, K, provider):
     #return ms, max_ms, min_ms
 
 
-def bench(M, N, K, provider="matmul_persistent_tma_ws_pingpong"):
-    a = torch.randn((M, K), device="cuda", dtype=torch.bfloat16)
-    b = torch.randn((N, K), device="cuda", dtype=torch.bfloat16).T
-    quantiles = [0.5, 0.2, 0.8]
-    fn = functools.partial(impl_map[provider], dump_chrome_trace=True)
-    ms, min_ms, max_ms = triton.testing.do_bench_cudagraph(lambda: fn(a, b), quantiles=quantiles)
-    if provider == "matmul_persistent_tma_ws_pingpong":
-        #print(matmul_persistent_tma_ws_cooperative_kernel.best_config)
-        if False:
-            print(BIN.asm["ttgir"])
-    perf = lambda ms: 2 * M * N * K * 1e-12 / (ms * 1e-3)
-    return perf(ms), perf(max_ms), perf(min_ms)
-
-
-#bench
 def prof(M, N, K, provider="matmul_persistent_tma_ws_pingpong"):
     a = torch.randn((M, K), device="cuda", dtype=torch.bfloat16)
     b = torch.randn((N, K), device="cuda", dtype=torch.bfloat16).T
     #kwargs = {"dump_chrome_trace": True} if provider is "matmul_ws_automatic" else {}
     impl_map[provider](a, b)
+
 
 def trace():
     M, N, K = 4 * 11 * 128, 4 * 12 * 128, 640
@@ -428,8 +420,8 @@ def trace():
         torch.cuda.synchronize()
     p.export_chrome_trace("prof.json")
 
-#test()
-benchmark.run(show_plots=True, print_data=True)
+test()
+benchmark.run(show_plots=True, print_data=True, save_path=".")
 #prof(6 * 11 * 128, 6 * 12 * 128, 1280, provider="cutlass_matmul")
 #prof(6 * 11 * 128, 6 * 12 * 128, 1280, provider="custom_pingpong")
 
