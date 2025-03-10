@@ -305,7 +305,8 @@ test_impls = [
     cutlass_matmul,
     #custom_gemm,
     custom_pingpong,
-    custom_stmatrix_gemm,
+    #custom_stmatrix_gemm,
+    matmul_persistent_tma_ws_pingpong,
 ]
 
 impl_map = {fn.__name__: fn for fn in test_impls}

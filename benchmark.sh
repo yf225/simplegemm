@@ -19,7 +19,7 @@ else
 fi
 
 #if [ -z "$TRITON_OVERRIDE_DIR" ]; then
-if false; then
+if true; then
     export TRITON_OVERRIDE_DIR=$(realpath "override.$DATE")
 
     echo $TRITON_DUMP_DIR
