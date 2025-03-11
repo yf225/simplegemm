@@ -15,8 +15,9 @@ SLOTS = 3*64
 torch._dynamo.config.recompile_limit = 1000
 torch._inductor.config.max_autotune_gemm_backends = "CUTLASS"
 torch._inductor.config.max_autotune_gemm_search_space = "EXHAUSTIVE"
-#torch._inductor.config.cuda.cutlass_dir = "/data/users/bertrand/cutlass"
-#torch._inductor.config.cuda.cutlass_op_allowlist_regex = "1x1x1"
+torch._inductor.config.cuda.cutlass_dir = f"{os.environ['HOME']}/local/cutlass"
+torch._inductor.config.cuda.cutlass_op_allowlist_regex = "128x128x64_1x1x1.*pingpong_epi_tma"
+torch._inductor.config.cuda.cutlass_instantiation_level = "0201"
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 

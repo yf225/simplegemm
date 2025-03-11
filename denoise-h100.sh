@@ -10,7 +10,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:=4}"
 # Lock GPU clocks
 (
     sudo nvidia-smi -i "$CUDA_VISIBLE_DEVICES" -pm 1                # persistent mode
-    sudo nvidia-smi --power-limit=650 -i "$CUDA_VISIBLE_DEVICES"    # lock to 500 W
+    sudo nvidia-smi --power-limit=650 -i "$CUDA_VISIBLE_DEVICES"    # lock to 650 W
     sudo nvidia-smi -lgc 1980 -i "$CUDA_VISIBLE_DEVICES"            # lock to 1980 MHz.  The max on H100 is 1980 MHz, but power throttling can still occur
 ) >/dev/null
 
