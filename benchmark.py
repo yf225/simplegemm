@@ -306,7 +306,7 @@ test_impls = [
     #custom_gemm,
     custom_pingpong,
     #custom_stmatrix_gemm,
-    matmul_persistent_tma_ws_pingpong,
+    #matmul_persistent_tma_ws_pingpong,
 ]
 
 impl_map = {fn.__name__: fn for fn in test_impls}
@@ -369,7 +369,6 @@ configs.append(
             "Torch (cuBLAS)",
             "Cutlass (no clusters)",
             "Custom CUDA",
-            "Triton",
         ],
         # styles=[("red", "-"), ("green", "-"), ("blue", "-")],
         ylabel="TFLOPS",  # Label name for the y-axis
