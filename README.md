@@ -52,6 +52,8 @@ conventions, I'll break down the features I'm targeting:
   matmul result from registers to shared memory before initiating the TMA
   transfer)
 
+![Ping-pong gemm illustration](images/pingpong.png "Ping-pong gemm illustration")
+
 I focused on shapes with M = 6 * 11 * 128 = 8448 and N = 6 * 12 * 128 = 9216.
 The reason for this oddly specific shape is that our kernel uses 128x128 output
 tiles; the H100 has 132 SMs (which is 11 * 12), so this shape will cause the
@@ -72,7 +74,12 @@ the middle (and it's actually quite easy to do these experiments in CUDA!  I
 tried three ideas in the course of writing this article!) but I think I've
 basically hit my goal.
 
-I also gained a much more detailed understanding of the pingpong algorithm itself!  There are a few aspects in particular that aren't totally obvious at first glance:
+![Results](images/perf.png "Results")
+
+I also gained a much more detailed understanding of the pingpong
+algorithm itself!  There are a few aspects in particular that aren't
+totally obvious at first glance:
+
 * The input pipeline reads A and B for each consumer separately, serially, but
   into the same queue.  This allows the best pipelining and load balancing, but
   requires a bit of subtlety in the barrier management.
@@ -115,6 +122,8 @@ For example, I actually carefully thought through how the writeback from MMA
 register layout to GMEM works; the layout seems complicated but I actually got
 this part right pretty quickly just by looking at the diagram and thinking real
 hard.
+
+![WGMMA layout](images/wgmma_layout.png "WGMMA layout")
 
 I got to performance parity pretty quickly, although I did have one really dumb
 bug, in which I mistyped the number of registers in setmaxnregs.inc and
@@ -170,6 +179,8 @@ First I wanted to switch from normal stores to `stmatrix`, since it knows how
 to unpack the complicated wgmma register layout into something nice.  This was
 actually the hardest part.
 
+![Funny comment about stmatrix](images/stmatrix_layout_funny.png "Funny comment about stmatrix layout")
+
 In retrospect, I think it's somewhat simpler than it sounds, but maybe it's
 just because I was finally able to get it done, and my brain has been busily
 purging the painful memories of getting it done.  Should I even try to explain?
@@ -200,6 +211,8 @@ each warp is writing to conflicting banks.  Maybe you can guess what's going on
 in this screenshot of my script (hint, the pipe separated columns are the
 "naive" layout, an 8-byte padded layout, and a swizzled layout.
 
+![Output of stmatrix script](images/stmatrix_script.png "Output of stmatrix script")
+
 It was time to swizzle.
 
 No, wait, in desperation, I went to check if Pranjal had solved this problem
@@ -209,8 +222,12 @@ had more shared memory.  Instead, I got a kernel launch failure.
 
 It was time to face down the infamous 128B swizzle diagram.
 
+![TMA swizzle diagram from PTX 8.5](images/tma_swizzle_old.png "TMA swizzle diagram from PTX 8.5")
 
-Ok, I still don't know what the deal with that diagram was, but NVIDIA has greatly improved it in the PTX 8.7 ISA manual:
+Ok, I still don't know what the deal with that diagram was, but NVIDIA
+has greatly improved it in the PTX 8.7 ISA manual:
+
+![TMA swizzle diagram from PTX 8.7](images/tma_swizzle.png "TMA swizzle diagram from PTX 8.7")
 
 But honestly?  The docs only help so much.  Even the description in terms of
 CuTE layouts is honestly not intuitive enough for me (thought it is rigorous,
